@@ -11,7 +11,7 @@ import uuid
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -37,6 +37,9 @@ class YasonDB:
             self.cnx = sqlite3.connect(path)
             self.check_valid()
         self._index_cache = {}  # key: path; value: expression (parsed path)
+
+    def __str__(self):
+        return f"YasonDb: {len(self)} documents, {len(self.get_indexes())} indexes"
 
     def __iter__(self):
         "Return an iterator over all document iuid's."
@@ -73,8 +76,8 @@ class YasonDB:
             raise KeyError(f"No such document '{iuid}'.")
 
     def __contains__(self, iuid):
-        cursor = self.cnx.execute("SELECT COUNT(*) FROM docs WHERE iuid=?",
-                                  (iuid,))
+        sql = "SELECT COUNT(*) FROM docs WHERE iuid=?"
+        cursor = self.cnx.execute(sql, (iuid,))
         return bool(cursor.fetchone()[0])
 
     def initialize(self):
@@ -114,7 +117,7 @@ class YasonDB:
         except KeyError:
             return default
 
-    def put(self, doc, iuid=None, doctype='default'):
+    def put(self, doc, doctype='default', iuid=None):
         """Store the document.
         If 'iuid' is not given, create a UUID4 iuid.
         Raise KeyError if the iuid already exists in the database.
@@ -124,9 +127,8 @@ class YasonDB:
             iuid = uuid.uuid4().hex
         with self.cnx:
             try:
-                self.cnx.execute("INSERT INTO docs (iuid, doctype, doc)"
-                                 " VALUES (?, ?, ?)",
-                                 (iuid, doctype, json.dumps(doc)))
+                sql = "INSERT INTO docs (iuid, doctype, doc) VALUES (?, ?, ?)"
+                self.cnx.execute(sql, (iuid, doctype, json.dumps(doc)))
             except sqlite3.DatabaseError:
                 raise KeyError(f"The iuid '{iuid}' already exists.")
             self._add_to_indexes(iuid, doc, doctype)
@@ -137,14 +139,15 @@ class YasonDB:
         The doctype cannot be changed.
         Raise KeyError if no such iuid in the database.
         """
-        cursor = self.cnx.execute("UPDATE docs SET doc=? WHERE iuid=?",
-                                  (json.dumps(doc), iuid))
+        sql = "UPDATE docs SET doc=? WHERE iuid=?"
+        cursor = self.cnx.execute(sql, (json.dumps(doc), iuid))
         if cursor.rowcount != 1:
             raise KeyError(f"No such document '{iuid}' to update.")
-        self._remove_from_indexes(iuid)
-        cursor = self.cnx.execute("SELECT doctype FROM docs WHERE iuid=?",
-                                  (iuid,))
-        self._add_to_indexes(iuid, doc, cursor.fetchone()[0])
+        with self.cnx:
+            self._remove_from_indexes(iuid)
+            sql = "SELECT doctype FROM docs WHERE iuid=?"
+            cursor = self.cnx.execute(sql, (iuid,))
+            self._add_to_indexes(iuid, doc, cursor.fetchone()[0])
 
     def delete(self, iuid):
         """Delete the document with the given iuid from the database.
@@ -156,90 +159,113 @@ class YasonDB:
 
     def count(self, doctype):
         "Return the number of documents of the given doctype."
-        cursor = self.cnx.execute("SELECT COUNT(*) FROM docs"
-                                  " WHERE doctype=?", (doctype,))
+        sql = "SELECT COUNT(*) FROM docs WHERE doctype=?"
+        cursor = self.cnx.execute(sql, (doctype,))
         return cursor.fetchone()[0]
 
     def create_index(self, name, path, doctype="default"):
         "Create an index given a JSON path and a doctype."
         if not NAME_RX.match(name):
-            raise ValueError("Invalid index name '{name}'.")
+            raise ValueError(f"Invalid index name '{name}'.")
         if self.index_exists(name):
-            raise ValueError("Index '{name}' is already defined.")
+            raise ValueError(f"Index '{name}' is already defined.")
         try:
             expression = pathparse(path)
         except JSONPathError as error:
             raise ValueError(f"Invalid JSON path: {error}")
         try:
             with self.cnx:
-                self.cnx.execute("INSERT INTO indexes"
-                                 " (name, path, doctype) VALUES (?, ?, ?)",
-                                 (name, path, doctype))
-                self.cnx.execute(f"CREATE TABLE index_{name}"
-                                 " (iuid TEXT PRIMARY KEY,"
-                                 "  value NOT NULL)")
+                sql = "INSERT INTO indexes (name, path, doctype) VALUES (?,?,?)"
+                self.cnx.execute(sql, (name, path, doctype))
+                sql = f"CREATE TABLE index_{name}" \
+                    " (iuid TEXT PRIMARY KEY, value NOT NULL)"
+                self.cnx.execute(sql)
         except sqlite3.Error as error:
             raise ValueError(f"Could not create index '{name}': {error}")
         self._index_cache[name] = expression
-        cursor = self.cnx.execute("SELECT iuid, doc FROM docs WHERE doctype=?",
-                                  (doctype,))
-        for iuid, doc in cursor:
-            self._add_to_indexes(iuid, json.loads(doc), doctype)
+        with self.cnx:
+            sql = "SELECT iuid, doc FROM docs WHERE doctype=?"
+            cursor = self.cnx.execute(sql, (doctype,))
+            sql = f"INSERT INTO index_{name} (iuid, value) VALUES(?, ?)"
+            for iuid, doc in cursor:
+                for match in expression.find(json.loads(doc)):
+                    self.cnx.execute(sql, (iuid, match.value))
 
     def index_exists(self, name):
         "Does an index with the given name exist?"
-        cursor = self.cnx.execute("SELECT COUNT(*) FROM indexes WHERE name=?",
-                                  (name,))
+        sql = "SELECT COUNT(*) FROM indexes WHERE name=?"
+        cursor = self.cnx.execute(sql, (name,))
         return bool(cursor.fetchone()[0])
 
     def get_indexes(self):
-        "Return the current list of indexes"
-        result = {}
-        for row in self.cnx.execute("SELECT name, path, doctype FROM indexes"):
-            result[row[0]] = {"path": row[1],
-                              "doctype": row[2]}
-        return result
+        "Return the list names for the current indexes."
+        sql = "SELECT name FROM indexes"
+        return [name for (name,) in self.cnx.execute(sql)]
 
-    def count_index(self, name):
-        "Return the number of items in the named index."
+    def get_index(self, name):
+        "Return definition and statistics for the named index."
         try:
+            sql = "SELECT path, doctype FROM indexes WHERE name=?"
+            cursor = self.cnx.execute(sql, (name,))
+            rows = cursor.fetchall()
+            if len(rows) != 1:
+                raise ValueError
+            (path, doctype) = rows[0]
+            result = {"path": path, "doctype": doctype}
             cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{name}")
-        except sqlite3.Error as error:
+            result["count"] = cursor.fetchone()[0]
+        except (ValueError, sqlite3.Error):
             raise KeyError(f"No such index '{name}'.")
-        return cursor.fetchone()[0]
+        if result["count"] > 0:
+            cursor = self.cnx.execute(f"SELECT MIN(value) FROM index_{name}")
+            result["min"] = cursor.fetchone()[0]
+            cursor = self.cnx.execute(f"SELECT MAX(value) FROM index_{name}")
+            result["max"] = cursor.fetchone()[0]
+        return result
 
     def in_index(self, name, iuid):
         "Is the given iuid in the named index?"
         try:
-            cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{name}"
-                                      " WHERE iuid=?",
-                                      (iuid,))
+            sql = f"SELECT COUNT(*) FROM index_{name} WHERE iuid=?"
+            cursor = self.cnx.execute(sql, (iuid,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return bool(cursor.fetchone()[0])
 
-    def find(self, name, value):
-        """Return a list of tuples containing (iuid, document) for all
-        documents  having the given value in the named index.
-        """
-        try:
-            cursor = self.cnx.execute(f"SELECT index_{name}.iuid, docs.doc"
-                                      " FROM index_{name}, docs"
-                                      " WHERE index_{name}.value=?"
-                                      " AND docs.iuid=index_{name}.iuid",
-                                      (value,))
-        except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
-        return [(row[0], json.loads(row[1])) for row in cursor]
-
     def delete_index(self, name):
-        "Delete the index with the given JSON path and optional doctype."
+        "Delete the index with the given name."
         if not self.index_exists(name):
             raise ValueError(f"No index '{name}' exists.")
         with self.cnx:
             self.cnx.execute("DELETE FROM indexes WHERE name=?", (name,))
             self.cnx.execute(f"DROP TABLE index_{name}")
             self._index_cache.pop(name, None)
+
+    def find(self, name, value):
+        """Return a generator of tuples containing (iuid, document) for
+        all documents having the given value in the named index.
+        """
+        try:
+            sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
+                f" WHERE index_{name}.value=? AND docs.iuid=index_{name}.iuid"
+            cursor = self.cnx.execute(sql, (value,))
+        except sqlite3.Error:
+            raise KeyError(f"No such index '{name}'.")
+        return ((name, json.loads(doc)) for name, doc in cursor)
+
+    def range(self, name, low, high):
+        """Return a generator of tuples containing (iuid, document) for
+        all documents having a value in the named index within the given
+        inclusive range.
+        """
+        try:
+            sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
+                f" WHERE index_{name}.value>=? AND index_{name}.value<=?" \
+                f" AND docs.iuid=index_{name}.iuid ORDER BY index_{name}.value"
+            cursor = self.cnx.execute(sql, (low, high))
+        except sqlite3.Error:
+            raise KeyError(f"No such index '{name}'.")
+        return ((name, json.loads(doc)) for name, doc in cursor)
 
     def close(self):
         "Close the connection."
@@ -253,29 +279,26 @@ class YasonDB:
         """Add the document with the given iuid to the applicable indexes.
         This operation must be performed within a transaction.
         """
-        cursor = self.cnx.execute("SELECT name, path FROM indexes"
-                                  " WHERE doctype=?",
-                                  (doctype,))
+        sql = "SELECT name, path FROM indexes WHERE doctype=?"
+        cursor = self.cnx.execute(sql, (doctype,))
         for name, path in cursor:
             try:
                 expression = self._index_cache[name]
             except KeyError:
                 expression = pathparse(path)
                 self._index_cache[name] = expression
+            sql = f"INSERT INTO index_{name} (iuid, value) VALUES(?, ?)"
             for match in expression.find(doc):
-                self.cnx.execute(f"INSERT INTO index_{name}"
-                                 " (iuid, value) VALUES(?, ?)",
-                                 (iuid, match.value))
+                self.cnx.execute(sql, (iuid, match.value))
 
     def _remove_from_indexes(self, iuid):
         """Remove the document with the given iuid from the indexes.
         This operation must be performed within a transaction.
         """
-        cursor = self.cnx.execute("SELECT indexes.name FROM indexes, docs"
-                                  " WHERE indexes.doctype=docs.doctype"
-                                  " AND docs.iuid=?",
-                                  (iuid,))
-        for name in [row[0] for row in cursor]:
+        sql = "SELECT indexes.name FROM indexes, docs" \
+            " WHERE indexes.doctype=docs.doctype AND docs.iuid=?"
+        cursor = self.cnx.execute(sql, (iuid,))
+        for (name,) in cursor:
             self.cnx.execute(f"DELETE FROM index_{name} WHERE iuid=?", (iuid,))
 
 
