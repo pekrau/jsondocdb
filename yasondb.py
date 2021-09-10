@@ -1,6 +1,5 @@
 "Yet another JSON document database. Built on Sqlite3 in Python."
 
-import argparse
 import json
 import os.path
 import re
@@ -11,7 +10,7 @@ import uuid
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -178,7 +177,7 @@ class YasonDB:
                 sql = "INSERT INTO indexes (name, path, doctype) VALUES (?,?,?)"
                 self.cnx.execute(sql, (name, path, doctype))
                 sql = f"CREATE TABLE index_{name}" \
-                    " (iuid TEXT PRIMARY KEY, value NOT NULL)"
+                    " (iuid TEXT PRIMARY KEY, ikey NOT NULL)"
                 self.cnx.execute(sql)
         except sqlite3.Error as error:
             raise ValueError(f"Could not create index '{name}': {error}")
@@ -186,7 +185,7 @@ class YasonDB:
         with self.cnx:
             sql = "SELECT iuid, doc FROM docs WHERE doctype=?"
             cursor = self.cnx.execute(sql, (doctype,))
-            sql = f"INSERT INTO index_{name} (iuid, value) VALUES(?, ?)"
+            sql = f"INSERT INTO index_{name} (iuid, ikey) VALUES(?, ?)"
             for iuid, doc in cursor:
                 for match in expression.find(json.loads(doc)):
                     self.cnx.execute(sql, (iuid, match.value))
@@ -217,9 +216,9 @@ class YasonDB:
         except (ValueError, sqlite3.Error):
             raise KeyError(f"No such index '{name}'.")
         if result["count"] > 0:
-            cursor = self.cnx.execute(f"SELECT MIN(value) FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT MIN(ikey) FROM index_{name}")
             result["min"] = cursor.fetchone()[0]
-            cursor = self.cnx.execute(f"SELECT MAX(value) FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT MAX(ikey) FROM index_{name}")
             result["max"] = cursor.fetchone()[0]
         return result
 
@@ -241,28 +240,28 @@ class YasonDB:
             self.cnx.execute(f"DROP TABLE index_{name}")
             self._index_cache.pop(name, None)
 
-    def find(self, name, value):
+    def find(self, name, key):
         """Return a generator of tuples containing (iuid, document) for
-        all documents having the given value in the named index.
+        all documents having the given key in the named index.
         """
         try:
             sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
-                f" WHERE index_{name}.value=? AND docs.iuid=index_{name}.iuid"
-            cursor = self.cnx.execute(sql, (value,))
+                f" WHERE index_{name}.ikey=? AND docs.iuid=index_{name}.iuid"
+            cursor = self.cnx.execute(sql, (key,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return ((name, json.loads(doc)) for name, doc in cursor)
 
-    def range(self, name, low, high):
+    def range(self, name, lowkey, highkey):
         """Return a generator of tuples containing (iuid, document) for
-        all documents having a value in the named index within the given
+        all documents having a key in the named index within the given
         inclusive range.
         """
         try:
             sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
-                f" WHERE index_{name}.value>=? AND index_{name}.value<=?" \
-                f" AND docs.iuid=index_{name}.iuid ORDER BY index_{name}.value"
-            cursor = self.cnx.execute(sql, (low, high))
+                f" WHERE index_{name}.ikey>=? AND index_{name}.ikey<=?" \
+                f" AND docs.iuid=index_{name}.iuid ORDER BY index_{name}.ikey"
+            cursor = self.cnx.execute(sql, (lowkey, highkey))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return ((name, json.loads(doc)) for name, doc in cursor)
@@ -287,7 +286,7 @@ class YasonDB:
             except KeyError:
                 expression = pathparse(path)
                 self._index_cache[name] = expression
-            sql = f"INSERT INTO index_{name} (iuid, value) VALUES(?, ?)"
+            sql = f"INSERT INTO index_{name} (iuid, ikey) VALUES(?, ?)"
             for match in expression.find(doc):
                 self.cnx.execute(sql, (iuid, match.value))
 
@@ -357,33 +356,6 @@ class DocIterator:
     def __next__(self):
         return self.db.get(next(self.iuiditerator))
 
-
-def _get_parser():
-    "Get the parser for the command-line tool."
-    p = argparse.ArgumentParser(prog="yasondb",
-                                usage="%(prog)s dbfilepath [options]",
-                                description="YasonDB command line tool.")
-    p.add_argument("dbfilepath", metavar="DBFILEPATH",
-                   help="Path to the Sqlite3 YasonDB database file.")
-    x01 = p.add_mutually_exclusive_group()
-    x01.add_argument("-c", "--create", action="store_true",
-                     help="Create the database file.")
-    return p
-
-def _execute(args):
-    try:
-        if args.create:
-            db = YasonDB(args.dbfilepath, create=True)
-        else:
-            db = YasonDB(args.dbfilepath, create=False)
-    except IOError as error:
-        sys.exit(str(error))
-
-def main():
-    "Command-line tool."
-    parser = _get_parser()
-    args = parser.parse_args()
-    _execute(args)
 
 if __name__ == "__main__":
     main()
