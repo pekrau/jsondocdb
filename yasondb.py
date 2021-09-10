@@ -156,6 +156,10 @@ class YasonDB:
             self._remove_from_indexes(iuid)
             self.cnx.execute("DELETE FROM docs WHERE iuid=?", (iuid,))
 
+    def docs(self):
+        "Return an iterator over all documents in the database."
+        return DocIterator(self)
+
     def count(self, doctype):
         "Return the number of documents of the given doctype."
         sql = "SELECT COUNT(*) FROM docs WHERE doctype=?"
@@ -310,7 +314,7 @@ class IuidIterator:
         self.doctype = doctype
         self.cursor = db.cnx.cursor()
         self.chunk = []
-        self.last = None
+        self.offset = None
         self.pos = 0
 
     def __iter__(self):
@@ -320,23 +324,17 @@ class IuidIterator:
         try:
             return self.chunk[self.pos][0]
         except IndexError:
-            where = ["doctype=?"]
-            args = [self.doctype]
-            if self.last is not None:
-                where.append("iuid>?")
-                args.append(self.last)
-            if where:
-                where = "WHERE " + " AND ".join(where)
-            else:
-                where = ""
-            sql = "SELECT iuid FROM docs" \
-                f" {where} ORDER BY iuid LIMIT {self.CHUNK_SIZE}"
-            self.cursor.execute(sql, args)
+            sql = f"SELECT iuid FROM docs WHERE doctype=? LIMIT {self.CHUNK_SIZE}"
+            if self.offset is not None:
+                sql += f" OFFSET {self.offset}"
+            self.cursor.execute(sql, (self.doctype,))
             self.chunk = self.cursor.fetchall()
-            try:
-                self.last = self.chunk[-1][0]
-            except IndexError:
+            if len(self.chunk) == 0:
                 raise StopIteration
+            elif self.offset is None:
+                self.offset = self.CHUNK_SIZE
+            else:
+                self.offset += self.CHUNK_SIZE
             self.pos = 0
             return self.chunk[self.pos][0]
         finally:
