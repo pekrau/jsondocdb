@@ -10,9 +10,16 @@ import uuid
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
+
+
+def _jsondoc_converter(data):
+    return json.loads(data)
+
+def _jsondoc_adapter(jsondoc):
+    return json.dumps(jsondoc)
 
 
 class YasonDB:
@@ -22,20 +29,27 @@ class YasonDB:
         """Connect to the Sqlite3 database file given by the path.
         The special path ':memory' indicates a RAM database.
         'create':
-          - False: The database file must exist, and be an YasonDB database.
+          - False: The database file must exist, and be a YasonDB database.
           - True: The database file must not exist; created and initialized.
         """
         if create:
             if os.path.exists(path):
                 raise IOError(f"File '{path}' already exists.")
-            self.cnx = sqlite3.connect(path)
+            self._connect(path)
             self.initialize()
         else:
             if not os.path.exists(path):
                 raise IOError(f"File '{path}' does not exist.")
-            self.cnx = sqlite3.connect(path)
+            self._connect(path)
             self.check_valid()
         self._index_cache = {}  # key: path; value: expression (parsed path)
+
+    def _connect(self, path):
+        "Return the Sqlite3 connection."
+        sqlite3.register_converter("JSONDOC", _jsondoc_converter)
+        sqlite3.register_adapter(dict, _jsondoc_adapter)
+        self.cnx = sqlite3.connect(path, 
+                                   detect_types=sqlite3.PARSE_DECLTYPES)
 
     def __str__(self):
         return f"YasonDb: {len(self)} documents, {len(self.get_indexes())} indexes"
@@ -52,10 +66,10 @@ class YasonDB:
 
     def __getitem__(self, iuid):
         cursor = self.cnx.execute("SELECT doc FROM docs WHERE iuid=?", (iuid,))
-        doc = cursor.fetchone()
-        if not doc:
+        row = cursor.fetchone()
+        if not row:
             raise KeyError(f"No such document '{iuid}'.")
-        return json.loads(doc[0])
+        return row[0]
 
     def __setitem__(self, iuid, doc):
         """If the document with the given iuid exists, update it.
@@ -85,7 +99,7 @@ class YasonDB:
             self.cnx.execute("CREATE TABLE docs"
                              " (iuid TEXT PRIMARY KEY,"
                              "  doctype TEXT NOT NULL,"
-                             "  doc TEXT NOT NULL)")
+                             "  doc JSONDOC NOT NULL)")
             self.cnx.execute("CREATE INDEX docs_doctype_ix"
                              " ON docs (doctype)")
             self.cnx.execute("CREATE TABLE indexes"
@@ -119,15 +133,18 @@ class YasonDB:
     def put(self, doc, doctype='default', iuid=None):
         """Store the document.
         If 'iuid' is not given, create a UUID4 iuid.
+        Raise ValueError if the document is not a dictionary.
         Raise KeyError if the iuid already exists in the database.
         Return the iuid.
         """
+        if not isinstance(doc, dict):
+            raise ValueError("'doc' must be an instance of 'dict'.")
         if not iuid:
             iuid = uuid.uuid4().hex
         with self.cnx:
             try:
                 sql = "INSERT INTO docs (iuid, doctype, doc) VALUES (?, ?, ?)"
-                self.cnx.execute(sql, (iuid, doctype, json.dumps(doc)))
+                self.cnx.execute(sql, (iuid, doctype, doc))
             except sqlite3.DatabaseError:
                 raise KeyError(f"The iuid '{iuid}' already exists.")
             self._add_to_indexes(iuid, doc, doctype)
@@ -136,10 +153,13 @@ class YasonDB:
     def update(self, iuid, doc):
         """Update the document with the given iuid.
         The doctype cannot be changed.
+        Raise ValueError if the document is not a dictionary.
         Raise KeyError if no such iuid in the database.
         """
+        if not isinstance(doc, dict):
+            raise ValueError("'doc' must be an instance of 'dict'.")
         sql = "UPDATE docs SET doc=? WHERE iuid=?"
-        cursor = self.cnx.execute(sql, (json.dumps(doc), iuid))
+        cursor = self.cnx.execute(sql, (doc, iuid))
         if cursor.rowcount != 1:
             raise KeyError(f"No such document '{iuid}' to update.")
         with self.cnx:
@@ -155,6 +175,14 @@ class YasonDB:
         with self.cnx:
             self._remove_from_indexes(iuid)
             self.cnx.execute("DELETE FROM docs WHERE iuid=?", (iuid,))
+
+    def get_doctype(self, iuid):
+        "Return the type of the document with the given iud."
+        sql = "SELECT doctype FROM docs WHERE iuid=?"
+        row = self.cnx.execute(sql, (iuid,)).fetchone()
+        if not row:
+            raise KeyError(f"No such document '{iuid}'.")
+        return row[0]
 
     def docs(self):
         "Return an iterator over all documents in the database."
@@ -191,7 +219,7 @@ class YasonDB:
             cursor = self.cnx.execute(sql, (doctype,))
             sql = f"INSERT INTO index_{name} (iuid, ikey) VALUES(?, ?)"
             for iuid, doc in cursor:
-                for match in expression.find(json.loads(doc)):
+                for match in expression.find(doc):
                     self.cnx.execute(sql, (iuid, match.value))
 
     def index_exists(self, name):
@@ -254,7 +282,7 @@ class YasonDB:
             cursor = self.cnx.execute(sql, (key,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return ((name, json.loads(doc)) for name, doc in cursor)
+        return ((name, doc) for name, doc in cursor)
 
     def range(self, name, lowkey, highkey):
         """Return a generator of tuples containing (iuid, document) for
@@ -268,7 +296,7 @@ class YasonDB:
             cursor = self.cnx.execute(sql, (lowkey, highkey))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return ((name, json.loads(doc)) for name, doc in cursor)
+        return ((name, doc) for name, doc in cursor)
 
     def close(self):
         "Close the connection."

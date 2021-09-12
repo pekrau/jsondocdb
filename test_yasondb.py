@@ -57,6 +57,8 @@ class Test(unittest.TestCase):
         self.db.update(iuid, {"key": value})
         doc = self.db[iuid]
         self.assertEqual(doc["key"], value)
+        doctype = self.db.get_doctype(iuid)
+        self.assertEqual(doctype, "default")
         del self.db[iuid]
         self.assertFalse(iuid in self.db)
 
