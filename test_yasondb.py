@@ -121,7 +121,8 @@ class Test(unittest.TestCase):
         self.assertEqual(self.db.get_index(index_name2)["count"], 3)
 
     def test_10_find(self):
-        iuid = self.db.put({"key": "akey", "key2": 1, "field": 2})
+        doc = {"key": "akey", "key2": 1, "field": 2}
+        iuid = self.db.put(doc)
         self.db.put({"key": "anotherkey", "field": 4})
         self.db.put({"key": "key2", "key2": 2, "field": 8})
         self.db.put({"key": "key3", "field": 4})
@@ -129,11 +130,14 @@ class Test(unittest.TestCase):
         self.db.create_index(index_name1, "$.key")
         index_name2 = "key2_index"
         self.db.create_index(index_name2, "field")
-        result = list(self.db.find(index_name1, "akey"))
+        result = self.db.find(index_name1, "akey")
         self.assertTrue(len(result), 1)
-        self.assertEqual(result[0][0], iuid)
+        self.assertEqual(result[0], iuid)
+        result = self.db.find_docs(index_name1, "akey")
+        self.assertTrue(len(result), 1)
+        self.assertEqual(result[0], doc)
         result = self.db.find(index_name2, 4)
-        self.assertTrue(len(list(result)), 2)
+        self.assertTrue(len(result), 2)
         info = self.db.get_index(index_name1)
         self.assertEqual(info["count"], 4)
         self.assertEqual(info["min"], "akey")
@@ -148,10 +152,12 @@ class Test(unittest.TestCase):
         self.db.create_index("index1", "$.key")
         result = list(self.db.range("index1", 1, 3))
         self.assertEqual(len(result), 4)
-        self.assertEqual(result[0][1]["key"], 1)
-        result = list(self.db.range("index1", 1, 4))
+        result = list(self.db.range_docs("index1", 1, 3))
         self.assertEqual(len(result), 4)
-        self.assertEqual(result[-1][1]["key"], 3)
+        self.assertEqual(result[0]["key"], 1)
+        result = list(self.db.range_docs("index1", 1, 4))
+        self.assertEqual(len(result), 4)
+        self.assertEqual(result[-1]["key"], 3)
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
 

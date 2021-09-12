@@ -10,7 +10,7 @@ import uuid
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -273,30 +273,50 @@ class YasonDB:
             self._index_cache.pop(name, None)
 
     def find(self, name, key):
-        """Return a generator of tuples containing (iuid, document) for
-        all documents having the given key in the named index.
+        """Return a list of iuids for all documents having
+        the given key in the named index.
         """
         try:
-            sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
-                f" WHERE index_{name}.ikey=? AND docs.iuid=index_{name}.iuid"
+            sql = f"SELECT iuid FROM index_{name} WHERE ikey=?"
             cursor = self.cnx.execute(sql, (key,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return ((name, doc) for name, doc in cursor)
+        return [row[0] for row in cursor]
+
+    def find_docs(self, name, key):
+        "Return a list of documents having the given key in the named index."
+        try:
+            sql = f"SELECT docs.doc FROM index_{name}, docs"\
+                f" WHERE ikey=? AND docs.iuid=index_{name}.iuid"
+            cursor = self.cnx.execute(sql, (key,))
+        except sqlite3.Error:
+            raise KeyError(f"No such index '{name}'.")
+        return [row[0] for row in cursor]
 
     def range(self, name, lowkey, highkey):
-        """Return a generator of tuples containing (iuid, document) for
-        all documents having a key in the named index within the given
-        inclusive range.
+        """Return a generator of iuds for all documents having
+        a key in the named index within the given inclusive range.
         """
         try:
-            sql = f"SELECT index_{name}.iuid, docs.doc FROM index_{name}, docs"\
-                f" WHERE index_{name}.ikey>=? AND index_{name}.ikey<=?" \
-                f" AND docs.iuid=index_{name}.iuid ORDER BY index_{name}.ikey"
+            sql = f"SELECT iuid FROM index_{name}"\
+                f" WHERE ?<=ikey AND ikey<=? ORDER BY ikey"
             cursor = self.cnx.execute(sql, (lowkey, highkey))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return ((name, doc) for name, doc in cursor)
+        return (row[0] for row in cursor)
+
+    def range_docs(self, name, lowkey, highkey):
+        """Return a generator of all documents having a key
+        in the named index within the given inclusive range.
+        """
+        try:
+            sql = f"SELECT docs.doc FROM index_{name}, docs"\
+                f" WHERE ?<=ikey AND ikey<=? AND docs.iuid=index_{name}.iuid" \
+                f" ORDER BY index_{name}.ikey"
+            cursor = self.cnx.execute(sql, (lowkey, highkey))
+        except sqlite3.Error:
+            raise KeyError(f"No such index '{name}'.")
+        return (row[0] for row in cursor)
 
     def close(self):
         "Close the connection."
