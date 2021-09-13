@@ -11,7 +11,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -254,47 +254,63 @@ class YasonDB:
             self.cnx.execute(f"DROP TABLE index_{name}")
             self._index_cache.pop(name, None)
 
-    def find(self, name, key):
+    def find(self, name, key, limit=None, offset=None):
         """Return a list of iuids for all documents having
         the given key in the named index.
         """
+        sql = f"SELECT iuid FROM index_{name} WHERE ikey=?"
+        if limit is not None:
+            sql += f" LIMIT {limit}"
+        if offset is not None:
+            sql += f" OFFSET {offset}"
         try:
-            sql = f"SELECT iuid FROM index_{name} WHERE ikey=?"
             cursor = self.cnx.execute(sql, (key,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return [row[0] for row in cursor]
 
-    def find_docs(self, name, key):
+    def find_docs(self, name, key, limit=None, offset=None):
         "Return a list of documents having the given key in the named index."
+        sql = f"SELECT docs.doc FROM index_{name}, docs"\
+            f" WHERE ikey=? AND docs.iuid=index_{name}.iuid"
+        if limit is not None:
+            sql += f" LIMIT {limit}"
+        if offset is not None:
+            sql += f" OFFSET {offset}"
         try:
-            sql = f"SELECT docs.doc FROM index_{name}, docs"\
-                f" WHERE ikey=? AND docs.iuid=index_{name}.iuid"
             cursor = self.cnx.execute(sql, (key,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return [row[0] for row in cursor]
 
-    def range(self, name, lowkey, highkey):
+    def range(self, name, lowkey, highkey, limit=None, offset=None):
         """Return a generator of iuds for all documents having
         a key in the named index within the given inclusive range.
         """
+        sql = f"SELECT iuid FROM index_{name}"\
+            f" WHERE ?<=ikey AND ikey<=? ORDER BY ikey"
+        if limit is not None:
+            sql += f" LIMIT {limit}"
+        if offset is not None:
+            sql += f" OFFSET {offset}"
         try:
-            sql = f"SELECT iuid FROM index_{name}"\
-                f" WHERE ?<=ikey AND ikey<=? ORDER BY ikey"
             cursor = self.cnx.execute(sql, (lowkey, highkey))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return (row[0] for row in cursor)
 
-    def range_docs(self, name, lowkey, highkey):
+    def range_docs(self, name, lowkey, highkey, limit=None, offset=None):
         """Return a generator of all documents having a key
         in the named index within the given inclusive range.
         """
+        sql = f"SELECT docs.doc FROM index_{name}, docs"\
+            f" WHERE ?<=ikey AND ikey<=? AND docs.iuid=index_{name}.iuid" \
+            f" ORDER BY index_{name}.ikey"
+        if limit is not None:
+            sql += f" LIMIT {limit}"
+        if offset is not None:
+            sql += f" OFFSET {offset}"
         try:
-            sql = f"SELECT docs.doc FROM index_{name}, docs"\
-                f" WHERE ?<=ikey AND ikey<=? AND docs.iuid=index_{name}.iuid" \
-                f" ORDER BY index_{name}.ikey"
             cursor = self.cnx.execute(sql, (lowkey, highkey))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
@@ -524,14 +540,14 @@ def delete(db, iuid):
 
 @cli.command()
 @click.argument("name")
-@click.option("-I", "--indent", default=2,
-              help="Pretty-print the resulting JSON document.")
 @click.option("-c", "--create", is_flag=True, help="Create the named index.")
 @click.option("-p", "--path", help="Path for the index to create.")
 @click.option("-D", "--delete", is_flag=True, help="Delete the named index.")
+@click.option("-I", "--indent", default=2,
+              help="Pretty-print the resulting JSON document.")
 @click.pass_obj
 def index(db, name, indent, create, path, delete):
-    "Show index definition as JSON."
+    "Show, create or delete index definition."
     if create:
         db.create_index(name, path)
     elif delete:
@@ -541,6 +557,80 @@ def index(db, name, indent, create, path, delete):
             click.echo(_json_str(db.get_index(name), indent))
         except KeyError as error:
             raise click.ClickException(error)
+
+@cli.command()
+@click.argument("name")
+@click.argument("key")
+@click.option("-l", "--limit", default=100,
+              help="Limit the number of result items.")
+@click.option("-o", "--offset", default=None, type=int,
+              help="Offset of the list of returned items.")
+@click.option("-I", "--indent", default=2,
+              help="Pretty-print the resulting JSON document.")
+@click.option("--docs", is_flag=True, 
+              help="Return the list of docs rather than iuds.")
+@click.pass_obj
+def find(db, name, key, limit, offset, docs, indent):
+    "Find the iuids or documents in the given index with the given key."
+    try:
+        key = int(key)
+    except ValueError:
+        pass
+    result = {"index": name,
+              "key": key}
+    try:
+        iuids = db.find(name, key, limit=limit, offset=offset)
+        result["count"] = len(iuids)
+        if docs:
+            docs = db.find_docs(name, key, limit=limit, offset=offset)
+            result["docs"] = dict(zip(iuids, docs))
+        else:
+            result["iuids"] = iuids
+    except KeyError as error:
+        raise click.ClickException(error)
+    click.echo(_json_str(result, indent))
+
+@cli.command()
+@click.argument("name")
+@click.argument("lowkey")
+@click.argument("highkey")
+@click.option("-l", "--limit", default=100,
+              help="Limit the number of result items.")
+@click.option("-o", "--offset", default=None, type=int,
+              help="Offset of the list of returned items.")
+@click.option("-I", "--indent", default=2,
+              help="Pretty-print the resulting JSON document.")
+@click.option("--docs", is_flag=True, 
+              help="Return the list of docs rather than iuds.")
+@click.pass_obj
+def range(db, name, lowkey, highkey, limit, offset, docs, indent):
+    """Find the iuids or documents in the given index within
+    the given inclusive range.
+    """
+    try:
+        lowkey = int(lowkey)
+    except ValueError:
+        pass
+    try:
+        highkey = int(highkey)
+    except ValueError:
+        pass
+    result = {"index": name,
+              "lowkey": lowkey,
+              "highkey": highkey}
+    try:
+        iuids = list(db.range(name, lowkey, highkey,
+                              limit=limit, offset=offset))
+        result["count"] = len(iuids)
+        if docs:
+            docs = list(db.range_docs(name, lowkey, highkey,
+                                      limit=limit, offset=offset))
+            result["docs"] = dict(zip(iuids, docs))
+        else:
+            result["iuids"] = iuids
+    except KeyError as error:
+        raise click.ClickException(error)
+    click.echo(_json_str(result, indent))
 
 if __name__ == "__main__":
     cli()
