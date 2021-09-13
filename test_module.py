@@ -43,22 +43,19 @@ class Test(unittest.TestCase):
             db = yasondb.YasonDB(yasondb.__file__)
 
     def test_04_add_delete_document(self):
-        iuid = self.db.put({"key": "value"})
+        iuid = self.db.add({"key": "value"})
         self.assertTrue(iuid in self.db)
         del self.db[iuid]
         self.assertFalse(iuid in self.db)
 
     def test_05_add_update_delete_document(self):
-        iuid = self.db.put({"key": "value"})
+        iuid = self.db.add({"key": "value"})
         self.assertTrue(iuid in self.db)
         self.assertEqual(len(self.db), 1)
-        self.assertEqual(self.db.count("default"), 1)
         value = "another value"
         self.db.update(iuid, {"key": value})
         doc = self.db[iuid]
         self.assertEqual(doc["key"], value)
-        doctype = self.db.get_doctype(iuid)
-        self.assertEqual(doctype, "default")
         del self.db[iuid]
         self.assertFalse(iuid in self.db)
 
@@ -66,7 +63,7 @@ class Test(unittest.TestCase):
         number = 2 * yasondb.IuidIterator.CHUNK_SIZE + 1
         created = []
         for n in range(number):
-            created.append(self.db.put({"key": n, "data": "some data"}))
+            created.append(self.db.add({"key": n, "data": "some data"}))
         self.assertEqual(len(self.db), number)
         iuids = list(self.db)
         self.assertEqual(len(iuids), number)
@@ -79,8 +76,8 @@ class Test(unittest.TestCase):
         self.assertFalse(self.db.index_exists("key_index"))
         self.db.create_index("key_index", "$.key")
         self.assertTrue(self.db.index_exists("key_index"))
-        iuid = self.db.put({"key": "akey", "field": 2})
-        self.db.put({"key": "anotherkey", "field": 4})
+        iuid = self.db.add({"key": "akey", "field": 2})
+        self.db.add({"key": "anotherkey", "field": 4})
         self.assertEqual(len(self.db), 2)
         self.assertTrue(iuid in self.db)
         self.assertEqual(self.db.get_index("key_index")["count"], 2)
@@ -89,8 +86,9 @@ class Test(unittest.TestCase):
 
     def test_08_exercise_index(self):
         id1 = "id1"
-        id2 = "id2"
         self.db[id1] = {"key": "akey", "field": 2}
+        self.assertEqual(len(self.db), 1)
+        id2 = "id2"
         self.db[id2] = {"key": "anotherkey", "field": 4}
         self.assertEqual(len(self.db), 2)
         self.assertTrue(id1 in self.db)
@@ -101,31 +99,31 @@ class Test(unittest.TestCase):
         self.assertEqual(self.db.get_index(index_name)["count"], 2)
 
     def test_09_several_indexes(self):
-        iuid = self.db.put({"key": "akey", "field": 2}, "type1")
-        self.db.put({"key": "anotherkey", "field": 4}, "type2")
-        self.db.put({"key": "key2", "field": 8}, "type2")
-        self.db.put({"key": "key3", "field": 4}, "type2")
+        iuid = self.db.add({"key": "akey", "id": "id1", "field": 2})
+        self.db.add({"key": "anotherkey", "id": "id2", "field": 4})
+        self.db.add({"key": "key2", "field": 8})
+        self.db.add({"key": "key3", "field": 4})
         index_name1 = "key_index"
         self.assertFalse(self.db.index_exists(index_name1))
-        self.db.create_index(index_name1, "$.key", "type1")
+        self.db.create_index(index_name1, "$.key")
         self.assertTrue(self.db.index_exists(index_name1))
         index_name2 = "another_index"
         self.assertFalse(self.db.index_exists(index_name2))
-        self.db.create_index(index_name2, "$.field", "type2")
+        self.db.create_index(index_name2, "$.id")
         self.assertTrue(self.db.index_exists(index_name2))
         self.assertEqual(set([index_name1, index_name2]),
                          set(self.db.get_indexes()))
         self.assertEqual(len(self.db), 4)
         self.assertTrue(iuid in self.db)
-        self.assertEqual(self.db.get_index(index_name1)["count"], 1)
-        self.assertEqual(self.db.get_index(index_name2)["count"], 3)
+        self.assertEqual(self.db.get_index(index_name1)["count"], 4)
+        self.assertEqual(self.db.get_index(index_name2)["count"], 2)
 
     def test_10_find(self):
         doc = {"key": "akey", "key2": 1, "field": 2}
-        iuid = self.db.put(doc)
-        self.db.put({"key": "anotherkey", "field": 4})
-        self.db.put({"key": "key2", "key2": 2, "field": 8})
-        self.db.put({"key": "key3", "field": 4})
+        iuid = self.db.add(doc)
+        self.db.add({"key": "anotherkey", "field": 4})
+        self.db.add({"key": "key2", "key2": 2, "field": 8})
+        self.db.add({"key": "key3", "field": 4})
         index_name1 = "key_index"
         self.db.create_index(index_name1, "$.key")
         index_name2 = "key2_index"
@@ -144,11 +142,11 @@ class Test(unittest.TestCase):
         self.assertEqual(info["max"], "key3")
 
     def test_11_range(self):
-        iuid = self.db.put({"key": 1, "key2": 1, "field": 2})
-        self.db.put({"key": 2, "field": 4})
-        self.db.put({"key": 1, "field": 8901})
-        self.db.put({"key": 3, "key2": 2, "field": 8})
-        self.db.put({"key": 5, "field": 4})
+        iuid = self.db.add({"key": 1, "key2": 1, "field": 2})
+        self.db.add({"key": 2, "field": 4})
+        self.db.add({"key": 1, "field": 8901})
+        self.db.add({"key": 3, "key2": 2, "field": 8})
+        self.db.add({"key": 5, "field": 4})
         self.db.create_index("index1", "$.key")
         result = list(self.db.range("index1", 1, 3))
         self.assertEqual(len(result), 4)
