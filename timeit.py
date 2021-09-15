@@ -3,6 +3,7 @@
 import os
 import time
 
+import click
 import yasondb
 
 DBFILEPATH = "/tmp/test.yasondb"
@@ -31,19 +32,31 @@ class Timer:
         self.start()
 
     def __exit__(self, type, value, tb):
-        print(self())
+        print(f"{self():.3g} seconds")
         return False
 
 
-def main():
+@click.command()
+@click.option("-n", "--number", default=10000)
+def cli(number):
+    try:
+        os.remove(DBFILEPATH)
+    except IOError:
+        pass
     timer = Timer()
     with timer:
         db = yasondb.YasonDB(DBFILEPATH, create=True)
-        for n in range(10000):
-            doc = {"n": n, "key": "some value", f"stuff {n}": {"more": "data"}}
-            db.put(doc)
+        with db:
+            for n in range(number):
+                doc = {"n": n, 
+                       "key": "some value",
+                       f"stuff {n}": {"more": "data"}}
+                db.add(doc)
+    print(timer.milliseconds / number, "ms per document")
     with timer:
-        db.create_index("ix", "$.n")
+        with db:
+            db.create_index("ix", "$.n")
+    print(timer.milliseconds / number, "ms per document")
     db.close()
     try:
         os.remove(DBFILEPATH)
@@ -51,4 +64,4 @@ def main():
         pass
 
 if __name__ == "__main__":
-    main()
+    cli()
