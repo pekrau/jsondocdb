@@ -11,7 +11,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.3.5"
+__version__ = "0.4.0"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -62,8 +62,9 @@ class YasonDB:
         return f"YasonDB: {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
-        "Return an iterator over all document iuid's."
-        return IuidIterator(self)
+        "Return an iterator over tuples (iuid, doc) for all documents."
+        sql = "SELECT iuid, doc FROM docs ORDER BY iuid"
+        return iter(self.cnx.execute(sql))
 
     def __len__(self):
         return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
@@ -185,10 +186,6 @@ class YasonDB:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{iuid}' to delete.")
 
-    def docs(self):
-        "Return an iterator over all documents in the database."
-        return DocIterator(self)
-
     def create_index(self, name, path):
         "Create an index for a given JSON path."
         if not NAME_RX.match(name):
@@ -273,55 +270,25 @@ class YasonDB:
         self._index_cache.pop(name, None)
 
     def find(self, name, key, limit=None, offset=None):
-        """Return a list of iuids for all documents having
-        the given key in the named index.
+        """Return an iterator over tuples (iuid, doc) for all documents
+        having the given key in the named index.
         """
-        sql = f"SELECT iuid FROM index_{name} WHERE ikey=?"
-        if limit is not None:
-            sql += f" LIMIT {limit}"
-        if offset is not None:
-            sql += f" OFFSET {offset}"
-        try:
-            cursor = self.cnx.execute(sql, (key,))
-        except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
-        return [row[0] for row in cursor]
-
-    def find_docs(self, name, key, limit=None, offset=None):
-        "Return a list of documents having the given key in the named index."
-        sql = f"SELECT docs.doc FROM index_{name}, docs"\
+        sql = f"SELECT docs.iuid, docs.doc FROM index_{name}, docs" \
             f" WHERE ikey=? AND docs.iuid=index_{name}.iuid"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
             sql += f" OFFSET {offset}"
         try:
-            cursor = self.cnx.execute(sql, (key,))
+            return iter(self.cnx.execute(sql, (key,)))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return [row[0] for row in cursor]
 
     def range(self, name, lowkey, highkey, limit=None, offset=None):
-        """Return a generator of iuids for all documents having
-        a key in the named index within the given inclusive range.
+        """Return an iterator over tuples (iuid, doc) or all documents
+        having a key in the named index within the given inclusive range.
         """
-        sql = f"SELECT iuid FROM index_{name}"\
-            f" WHERE ?<=ikey AND ikey<=? ORDER BY ikey"
-        if limit is not None:
-            sql += f" LIMIT {limit}"
-        if offset is not None:
-            sql += f" OFFSET {offset}"
-        try:
-            cursor = self.cnx.execute(sql, (lowkey, highkey))
-        except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
-        return (row[0] for row in cursor)
-
-    def range_docs(self, name, lowkey, highkey, limit=None, offset=None):
-        """Return a generator of all documents having a key
-        in the named index within the given inclusive range.
-        """
-        sql = f"SELECT docs.doc FROM index_{name}, docs"\
+        sql = f"SELECT docs.iuid, docs.doc FROM index_{name}, docs"\
             f" WHERE ?<=ikey AND ikey<=? AND docs.iuid=index_{name}.iuid" \
             f" ORDER BY index_{name}.ikey"
         if limit is not None:
@@ -329,10 +296,9 @@ class YasonDB:
         if offset is not None:
             sql += f" OFFSET {offset}"
         try:
-            cursor = self.cnx.execute(sql, (lowkey, highkey))
+            return iter(self.cnx.execute(sql, (lowkey, highkey)))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
-        return (row[0] for row in cursor)
 
     def backup(self, path):
         "Backup this database in a safe manner into a file given by the path."
@@ -378,55 +344,6 @@ class YasonDB:
             self.cnx.execute(f"DELETE FROM index_{name} WHERE iuid=?", (iuid,))
 
 
-class IuidIterator:
-    "Iterate over all iuids in the database."
-
-    CHUNK_SIZE = 100
-
-    def __init__(self, db):
-        self.cursor = db.cnx.cursor()
-        self.chunk = []
-        self.offset = None
-        self.pos = 0
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        try:
-            return self.chunk[self.pos][0]
-        except IndexError:
-            sql = f"SELECT iuid FROM docs LIMIT {self.CHUNK_SIZE}"
-            if self.offset is not None:
-                sql += f" OFFSET {self.offset}"
-            self.cursor.execute(sql)
-            self.chunk = self.cursor.fetchall()
-            if len(self.chunk) == 0:
-                raise StopIteration
-            elif self.offset is None:
-                self.offset = self.CHUNK_SIZE
-            else:
-                self.offset += self.CHUNK_SIZE
-            self.pos = 0
-            return self.chunk[self.pos][0]
-        finally:
-            self.pos += 1
-
-
-class DocIterator:
-    "Iterate over documents in the database."
-
-    def __init__(self, db):
-        self.db = db
-        self.iuiditerator = IuidIterator(self.db)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        return self.db.get(next(self.iuiditerator))
-
-
 @click.group()
 def cli():
     "YasonDB command-line interface."
@@ -458,15 +375,13 @@ def check(dbfile):
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def dump(dbfile, indent):
-    "Write out all JSON documents rom the database."
+    "Write out all JSON documents from the database."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
         raise click.ClickException(error)
-    result = {"n_documents": len(db)}
-    result["docs"] = docs = {}
-    for iuid in db:
-        docs[iuid] = db[iuid]
+    result = {"n_documents": len(db),
+              "docs": dict(list(db))}
     click.echo(_json_str(result, indent=indent))
 
 @cli.command()
@@ -669,10 +584,8 @@ def index_delete(dbfile, name):
               help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-@click.option("--docs", is_flag=True, 
-              help="Return the dictionary of docs rather than list of iuids.")
-def find(dbfile, name, key, limit, offset, docs, indent):
-    "Find the iuids or documents in the given index with the given key."
+def find(dbfile, name, key, limit, offset, indent):
+    "Find the iuids and documents in the given index with the given key."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
@@ -681,18 +594,14 @@ def find(dbfile, name, key, limit, offset, docs, indent):
         key = int(key)
     except ValueError:
         pass
-    result = {"index": name,
-              "key": key}
     try:
-        iuids = db.find(name, key, limit=limit, offset=offset)
-        result["count"] = len(iuids)
-        if docs:
-            docs = db.find_docs(name, key, limit=limit, offset=offset)
-            result["docs"] = dict(zip(iuids, docs))
-        else:
-            result["iuids"] = iuids
+        contents = list(db.find(name, key, limit=limit, offset=offset))
     except KeyError as error:
         raise click.ClickException(error)
+    result = {"index": name,
+              "key": key,
+              "count": len(contents),
+              "docs": dict(contents)}
     click.echo(_json_str(result, indent))
 
 @cli.command()
@@ -706,9 +615,7 @@ def find(dbfile, name, key, limit, offset, docs, indent):
               help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-@click.option("--docs", is_flag=True, 
-              help="Return the dictionary of docs rather than list of iuids.")
-def range(dbfile, name, lowkey, highkey, limit, offset, docs, indent):
+def range(dbfile, name, lowkey, highkey, limit, offset, indent):
     """Find the iuids or documents in the given index within
     the given inclusive range.
     """
@@ -724,21 +631,16 @@ def range(dbfile, name, lowkey, highkey, limit, offset, docs, indent):
         highkey = int(highkey)
     except ValueError:
         pass
-    result = {"index": name,
-              "lowkey": lowkey,
-              "highkey": highkey}
     try:
-        iuids = list(db.range(name, lowkey, highkey,
-                              limit=limit, offset=offset))
-        result["count"] = len(iuids)
-        if docs:
-            docs = list(db.range_docs(name, lowkey, highkey,
-                                      limit=limit, offset=offset))
-            result["docs"] = dict(zip(iuids, docs))
-        else:
-            result["iuids"] = iuids
+        contents = list(db.range(name, lowkey, highkey,
+                                 limit=limit, offset=offset))
     except KeyError as error:
         raise click.ClickException(error)
+    result = {"index": name,
+              "lowkey": lowkey,
+              "highkey": highkey,
+              "count": len(contents),
+              "docs": dict(contents)}
     click.echo(_json_str(result, indent))
 
 @cli.command()

@@ -78,24 +78,21 @@ class Test(unittest.TestCase):
             self.assertEqual(len(self.db), 1)
             value = "another value"
             self.db.update(iuid, {"key": value})
-            doc = self.db[iuid]
-            self.assertEqual(doc["key"], value)
-            del self.db[iuid]
-            self.assertFalse(iuid in self.db)
+        doc = self.db[iuid]
+        self.assertEqual(doc["key"], value)
+        del self.db[iuid]
+        self.assertFalse(iuid in self.db)
 
-    def test_06_iterators(self):
+    def test_06_many(self):
+        MANY = 1000
         with self.db:
-            number = 2 * yasondb.IuidIterator.CHUNK_SIZE + 1
             created = []
-            for n in range(number):
+            for n in range(MANY):
                 created.append(self.db.add({"key": n, "data": "some data"}))
-            self.assertEqual(len(self.db), number)
-            iuids = list(self.db)
-            self.assertEqual(len(iuids), number)
-            self.assertEqual(min(iuids), min(created))
-            docs = list(self.db.docs())
-            self.assertEqual(type(docs[0]), dict)
-            self.assertEqual(len(docs), number)
+        self.assertEqual(len(self.db), MANY)
+        contents = list(self.db)
+        self.assertEqual(len(contents), MANY)
+        self.assertEqual(min([r[0] for r in contents]), min(created))
 
     def test_07_create_index(self):
         with self.db:
@@ -104,11 +101,11 @@ class Test(unittest.TestCase):
             self.assertTrue(self.db.index_exists("key_index"))
             iuid = self.db.add({"key": "akey", "field": 2})
             self.db.add({"key": "anotherkey", "field": 4})
-            self.assertEqual(len(self.db), 2)
-            self.assertTrue(iuid in self.db)
-            self.assertEqual(self.db.get_index("key_index")["count"], 2)
-            with self.assertRaises(KeyError):
-                self.db.get_index("no_such_index")
+        self.assertEqual(len(self.db), 2)
+        self.assertTrue(iuid in self.db)
+        self.assertEqual(self.db.get_index("key_index")["count"], 2)
+        with self.assertRaises(KeyError):
+            self.db.get_index("no_such_index")
 
     def test_08_exercise_index(self):
         with self.db:
@@ -157,13 +154,12 @@ class Test(unittest.TestCase):
             self.db.create_index(index_name1, "$.key")
             index_name2 = "key2_index"
             self.db.create_index(index_name2, "field")
-        result = self.db.find(index_name1, "akey")
+        result = list(self.db.find(index_name1, "akey"))
         self.assertTrue(len(result), 1)
-        self.assertEqual(result[0], iuid)
-        result = self.db.find_docs(index_name1, "akey")
-        self.assertTrue(len(result), 1)
-        self.assertEqual(result[0], doc)
-        result = self.db.find(index_name2, 4)
+        i, d = result[0]
+        self.assertEqual(i, iuid)
+        self.assertEqual(d, doc)
+        result = list(self.db.find(index_name2, 4))
         self.assertTrue(len(result), 2)
         info = self.db.get_index(index_name1)
         self.assertEqual(info["count"], 4)
@@ -180,12 +176,9 @@ class Test(unittest.TestCase):
             self.db.create_index("index1", "$.key")
         result = list(self.db.range("index1", 1, 3))
         self.assertEqual(len(result), 4)
-        result = list(self.db.range_docs("index1", 1, 3))
+        self.assertEqual(result[0][1]["key"], 1)
         self.assertEqual(len(result), 4)
-        self.assertEqual(result[0]["key"], 1)
-        result = list(self.db.range_docs("index1", 1, 4))
-        self.assertEqual(len(result), 4)
-        self.assertEqual(result[-1]["key"], 3)
+        self.assertEqual(result[-1][1]["key"], 3)
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
 
