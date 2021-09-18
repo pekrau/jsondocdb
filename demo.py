@@ -1,9 +1,5 @@
-# YasonDB
+"Demo code for the README."
 
-Yet another JSON document database. Built on Sqlite3 in Python.
-Uses JSONPath for indexes.
-
-```python
 import yasondb
 
 # Argument 'create' is by default False, requiring an existing file.
@@ -41,4 +37,3 @@ if not db.in_index("key_index", "k4"):
 ids = list(db.range("key_index", "k1", "k2"))
 if len(ids) == 2:
     print("'range' return ids within low and high inclusive.")
-```

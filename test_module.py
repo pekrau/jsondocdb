@@ -44,44 +44,46 @@ class Test(unittest.TestCase):
 
     def test_04_add_delete_document(self):
         with self.db:
-            iuid = self.db.add({"key": "value"})
-            self.assertTrue(iuid in self.db)
+            id = self.db.add({"key": "value"})
+            self.assertTrue(id in self.db)
         self.assertEqual(len(self.db), 1)
         with self.db:
-            del self.db[iuid]
-            self.assertFalse(iuid in self.db)
+            del self.db[id]
+            self.assertFalse(id in self.db)
         self.assertEqual(len(self.db), 0)
+        # Test rollback when error within transaction.
         try:
             with self.db:
-                iuid = self.db.add({"key": "value"})
-                self.assertTrue(iuid in self.db)
+                id = self.db.add({"key": "value"})
+                self.assertTrue(id in self.db)
+                self.assertEqual(len(self.db), 1)
                 raise ValueError
         except ValueError:
-            self.assertFalse(iuid in self.db)
+            self.assertFalse(id in self.db)
             self.assertEqual(len(self.db), 0)
         with self.db:
-            iuid = self.db.add({"key": "value"})
+            id = self.db.add({"key": "value"})
         self.assertEqual(len(self.db), 1)
         try:
             with self.db:
-                del self.db[iuid]
-                self.assertFalse(iuid in self.db)
+                del self.db[id]
+                self.assertFalse(id in self.db)
                 raise ValueError
         except ValueError:
-            self.assertTrue(iuid in self.db)
+            self.assertTrue(id in self.db)
             self.assertEqual(len(self.db), 1)
 
     def test_05_add_update_delete_document(self):
         with self.db:
-            iuid = self.db.add({"key": "value"})
-            self.assertTrue(iuid in self.db)
+            id = self.db.add({"key": "value"})
+            self.assertTrue(id in self.db)
             self.assertEqual(len(self.db), 1)
             value = "another value"
-            self.db.update(iuid, {"key": value})
-        doc = self.db[iuid]
+            self.db.update(id, {"key": value})
+        doc = self.db[id]
         self.assertEqual(doc["key"], value)
-        del self.db[iuid]
-        self.assertFalse(iuid in self.db)
+        del self.db[id]
+        self.assertFalse(id in self.db)
 
     def test_06_many(self):
         MANY = 1000
@@ -90,19 +92,19 @@ class Test(unittest.TestCase):
             for n in range(MANY):
                 created.append(self.db.add({"key": n, "data": "some data"}))
         self.assertEqual(len(self.db), MANY)
-        contents = list(self.db)
-        self.assertEqual(len(contents), MANY)
-        self.assertEqual(min([r[0] for r in contents]), min(created))
+        ids = list(self.db)
+        self.assertEqual(len(ids), MANY)
+        self.assertEqual(min(ids), min(created))
 
     def test_07_create_index(self):
         with self.db:
             self.assertFalse(self.db.index_exists("key_index"))
             self.db.create_index("key_index", "$.key")
             self.assertTrue(self.db.index_exists("key_index"))
-            iuid = self.db.add({"key": "akey", "field": 2})
+            id = self.db.add({"key": "akey", "field": 2})
             self.db.add({"key": "anotherkey", "field": 4})
         self.assertEqual(len(self.db), 2)
-        self.assertTrue(iuid in self.db)
+        self.assertTrue(id in self.db)
         self.assertEqual(self.db.get_index("key_index")["count"], 2)
         with self.assertRaises(KeyError):
             self.db.get_index("no_such_index")
@@ -124,7 +126,7 @@ class Test(unittest.TestCase):
 
     def test_09_several_indexes(self):
         with self.db:
-            iuid = self.db.add({"key": "akey", "id": "id1", "field": 2})
+            id = self.db.add({"key": "akey", "id": "id1", "field": 2})
             self.db.add({"key": "anotherkey", "id": "id2", "field": 4})
             self.db.add({"key": "key2", "field": 8})
             self.db.add({"key": "key3", "field": 4})
@@ -139,14 +141,14 @@ class Test(unittest.TestCase):
         self.assertEqual(set([index_name1, index_name2]),
                          set(self.db.get_indexes()))
         self.assertEqual(len(self.db), 4)
-        self.assertTrue(iuid in self.db)
+        self.assertTrue(id in self.db)
         self.assertEqual(self.db.get_index(index_name1)["count"], 4)
         self.assertEqual(self.db.get_index(index_name2)["count"], 2)
 
     def test_10_find(self):
         with self.db:
             doc = {"key": "akey", "key2": 1, "field": 2}
-            iuid = self.db.add(doc)
+            id = self.db.add(doc)
             self.db.add({"key": "anotherkey", "field": 4})
             self.db.add({"key": "key2", "key2": 2, "field": 8})
             self.db.add({"key": "key3", "field": 4})
@@ -154,21 +156,20 @@ class Test(unittest.TestCase):
             self.db.create_index(index_name1, "$.key")
             index_name2 = "key2_index"
             self.db.create_index(index_name2, "field")
-        result = list(self.db.find(index_name1, "akey"))
-        self.assertTrue(len(result), 1)
-        i, d = result[0]
-        self.assertEqual(i, iuid)
-        self.assertEqual(d, doc)
-        result = list(self.db.find(index_name2, 4))
-        self.assertTrue(len(result), 2)
         info = self.db.get_index(index_name1)
         self.assertEqual(info["count"], 4)
         self.assertEqual(info["min"], "akey")
         self.assertEqual(info["max"], "key3")
+        result = self.db.find(index_name1, "akey")
+        self.assertTrue(len(result), 1)
+        self.assertEqual(result[0], id)
+        self.assertEqual(self.db[result[0]], doc)
+        result = self.db.find(index_name2, 4)
+        self.assertTrue(len(result), 2)
 
     def test_11_range(self):
         with self.db:
-            iuid = self.db.add({"key": 1, "key2": 1, "field": 2})
+            id = self.db.add({"key": 1, "key2": 1, "field": 2})
             self.db.add({"key": 2, "field": 4})
             self.db.add({"key": 1, "field": 8901})
             self.db.add({"key": 3, "key2": 2, "field": 8})
@@ -176,9 +177,8 @@ class Test(unittest.TestCase):
             self.db.create_index("index1", "$.key")
         result = list(self.db.range("index1", 1, 3))
         self.assertEqual(len(result), 4)
-        self.assertEqual(result[0][1]["key"], 1)
-        self.assertEqual(len(result), 4)
-        self.assertEqual(result[-1][1]["key"], 3)
+        self.assertEqual(self.db[result[0]]["key"], 1)
+        self.assertEqual(self.db[result[-1]]["key"], 3)
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
 

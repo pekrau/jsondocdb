@@ -11,7 +11,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -62,9 +62,9 @@ class YasonDB:
         return f"YasonDB: {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
-        "Return an iterator over tuples (iuid, doc) for all documents."
-        sql = "SELECT iuid, doc FROM docs ORDER BY iuid"
-        return iter(self.cnx.execute(sql))
+        "Return a generator over id for all documents."
+        sql = "SELECT id FROM docs ORDER BY id"
+        return (row[0] for row in self.cnx.execute(sql))
 
     def __len__(self):
         return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
@@ -72,28 +72,23 @@ class YasonDB:
     def __del__(self):
         self.close()
 
-    def __getitem__(self, iuid):
-        cursor = self.cnx.execute("SELECT doc FROM docs WHERE iuid=?", (iuid,))
+    def __getitem__(self, id):
+        cursor = self.cnx.execute("SELECT doc FROM docs WHERE id=?", (id,))
         row = cursor.fetchone()
         if not row:
-            raise KeyError(f"No such document '{iuid}'.")
+            raise KeyError(f"No such document '{id}'.")
         return row[0]
 
-    def __setitem__(self, iuid, doc):
-        """If the document with the given iuid exists, update it.
-        If no document with the given iuid exists, add it.
-        """
-        self.update(iuid, doc, add=True)
+    def __setitem__(self, id, doc):
+        "Add or update the document in the database with the given id."
+        self.update(id, doc, add=True)
 
-    def __delitem__(self, iuid):
-        if iuid in self:
-            self.delete(iuid)
-        else:
-            raise KeyError(f"No such document '{iuid}'.")
+    def __delitem__(self, id):
+        self.delete(id)
 
-    def __contains__(self, iuid):
-        sql = "SELECT COUNT(*) FROM docs WHERE iuid=?"
-        cursor = self.cnx.execute(sql, (iuid,))
+    def __contains__(self, id):
+        sql = "SELECT COUNT(*) FROM docs WHERE id=?"
+        cursor = self.cnx.execute(sql, (id,))
         return bool(cursor.fetchone()[0])
 
     def __enter__(self):
@@ -112,7 +107,7 @@ class YasonDB:
         "Set up the tables to hold documents and index definitions."
         try:
             self.cnx.execute("CREATE TABLE docs"
-                             " (iuid TEXT PRIMARY KEY,"
+                             " (id TEXT PRIMARY KEY,"
                              "  doc JSONDOC NOT NULL)")
             self.cnx.execute("CREATE TABLE indexes"
                              " (name TEXT PRIMARY KEY,"
@@ -134,57 +129,57 @@ class YasonDB:
         if not self.is_valid():
             raise ValueError("Could not read the database; not a YasonDB file?")
 
-    def get(self, iuid, default=None):
-        "Retrieve the document given its iuid, else the default."
+    def get(self, id, default=None):
+        "Retrieve the document given its id, else the default."
         try:
-            return self[iuid]
+            return self[id]
         except KeyError:
             return default
 
-    def add(self, doc, iuid=None):
+    def add(self, doc, id=None):
         """Add the document to the database.
-        If 'iuid' is not provided, create a UUID4 iuid.
+        If 'id' is not provided, create a UUID4 id.
         Raise ValueError if the document is not a dictionary.
-        Raise KeyError if the iuid already exists in the database.
-        Return the iuid.
+        Raise KeyError if the id already exists in the database.
+        Return the id.
         """
         if not isinstance(doc, dict):
             raise ValueError("'doc' must be an instance of 'dict'.")
-        if not iuid:
-            iuid = uuid.uuid4().hex
+        if not id:
+            id = uuid.uuid4().hex
         try:
-            sql = "INSERT INTO docs (iuid, doc) VALUES (?, ?)"
-            self.cnx.execute(sql, (iuid, doc))
+            sql = "INSERT INTO docs (id, doc) VALUES (?, ?)"
+            self.cnx.execute(sql, (id, doc))
         except sqlite3.DatabaseError:
-            raise KeyError(f"The iuid '{iuid}' already exists.")
-        self._add_to_indexes(iuid, doc)
-        return iuid
+            raise KeyError(f"The id '{id}' already exists.")
+        self._add_to_indexes(id, doc)
+        return id
 
-    def update(self, iuid, doc, add=False):
-        """Update the document with the given iuid.
+    def update(self, id, doc, add=False):
+        """Update the document with the given id.
         Raise ValueError if the document is not a dictionary.
-        Raise KeyError if no such iuid in the database and 'add' is False.
+        Raise KeyError if no such id in the database and 'add' is False.
         """
         if not isinstance(doc, dict):
             raise ValueError("'doc' must be an instance of 'dict'.")
-        sql = "UPDATE docs SET doc=? WHERE iuid=?"
-        cursor = self.cnx.execute(sql, (doc, iuid))
+        sql = "UPDATE docs SET doc=? WHERE id=?"
+        cursor = self.cnx.execute(sql, (doc, id))
         if cursor.rowcount == 1: # Actually updated.
-            self._remove_from_indexes(iuid)
-            self._add_to_indexes(iuid, doc)
+            self._remove_from_indexes(id)
+            self._add_to_indexes(id, doc)
         elif add:
-            self.add(doc, iuid=iuid)
+            self.add(doc, id=id)
         else:
-            raise KeyError(f"No such document '{iuid}' to update.")
+            raise KeyError(f"No such document '{id}' to update.")
 
-    def delete(self, iuid):
-        """Delete the document with the given iuid from the database.
+    def delete(self, id):
+        """Delete the document with the given id from the database.
         No error if the document with the given key does not exist.
         """
-        self._remove_from_indexes(iuid)
-        cursor = self.cnx.execute("DELETE FROM docs WHERE iuid=?", (iuid,))
+        self._remove_from_indexes(id)
+        cursor = self.cnx.execute("DELETE FROM docs WHERE id=?", (id,))
         if cursor.rowcount == 0:
-            raise KeyError(f"No such document '{iuid}' to delete.")
+            raise KeyError(f"No such document '{id}' to delete.")
 
     def create_index(self, name, path):
         "Create an index for a given JSON path."
@@ -200,18 +195,18 @@ class YasonDB:
             sql = "INSERT INTO indexes (name, path) VALUES (?, ?)"
             self.cnx.execute(sql, (name, path))
             sql = f"CREATE TABLE index_{name}" \
-                " (iuid TEXT PRIMARY KEY, ikey NOT NULL)"
+                " (id TEXT PRIMARY KEY, ikey NOT NULL)"
             self.cnx.execute(sql)
             sql = f"CREATE INDEX index_{name}_ix ON index_{name} (ikey)"
         except sqlite3.Error as error:
             raise ValueError(f"Could not create index '{name}': {error}")
         self._index_cache[name] = expression
-        sql = "SELECT iuid, doc FROM docs"
+        sql = "SELECT id, doc FROM docs"
         cursor = self.cnx.execute(sql)
-        sql = f"INSERT INTO index_{name} (iuid, ikey) VALUES(?, ?)"
-        for iuid, doc in cursor:
+        sql = f"INSERT INTO index_{name} (id, ikey) VALUES(?, ?)"
+        for id, doc in cursor:
             for match in expression.find(doc):
-                self.cnx.execute(sql, (iuid, match.value))
+                self.cnx.execute(sql, (id, match.value))
 
     def index_exists(self, name):
         "Does an index with the given name exist?"
@@ -245,18 +240,18 @@ class YasonDB:
         return result
 
     def get_index_keys(self, name):
-        "Return a generator to provide all tuples (iuid, key) in the index."
+        "Return a generator to provide all tuples (id, key) in the index."
         try:
-            cursor = self.cnx.execute(f"SELECT iuid, ikey FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT id, ikey FROM index_{name}")
             return (row for row in cursor)
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
 
-    def in_index(self, name, iuid):
-        "Is the given iuid in the named index?"
+    def in_index(self, name, id):
+        "Is the given id in the named index?"
         try:
-            sql = f"SELECT COUNT(*) FROM index_{name} WHERE iuid=?"
-            cursor = self.cnx.execute(sql, (iuid,))
+            sql = f"SELECT COUNT(*) FROM index_{name} WHERE id=?"
+            cursor = self.cnx.execute(sql, (id,))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
         return bool(cursor.fetchone()[0])
@@ -270,33 +265,33 @@ class YasonDB:
         self._index_cache.pop(name, None)
 
     def find(self, name, key, limit=None, offset=None):
-        """Return an iterator over tuples (iuid, doc) for all documents
-        having the given key in the named index.
+        """Return a list of all ids for the documents having
+        the given key in the named index.
         """
-        sql = f"SELECT docs.iuid, docs.doc FROM index_{name}, docs" \
-            f" WHERE ikey=? AND docs.iuid=index_{name}.iuid"
+        sql = f"SELECT docs.id FROM index_{name}, docs" \
+            f" WHERE ikey=? AND docs.id=index_{name}.id"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
             sql += f" OFFSET {offset}"
         try:
-            return iter(self.cnx.execute(sql, (key,)))
+            return [row[0] for row in self.cnx.execute(sql, (key,))]
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
 
     def range(self, name, lowkey, highkey, limit=None, offset=None):
-        """Return an iterator over tuples (iuid, doc) or all documents
-        having a key in the named index within the given inclusive range.
+        """Return a generator over all ids for the documents having 
+        a key in the named index within the given inclusive range.
         """
-        sql = f"SELECT docs.iuid, docs.doc FROM index_{name}, docs"\
-            f" WHERE ?<=ikey AND ikey<=? AND docs.iuid=index_{name}.iuid" \
+        sql = f"SELECT docs.id, docs.doc FROM index_{name}, docs"\
+            f" WHERE ?<=ikey AND ikey<=? AND docs.id=index_{name}.id" \
             f" ORDER BY index_{name}.ikey"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
             sql += f" OFFSET {offset}"
         try:
-            return iter(self.cnx.execute(sql, (lowkey, highkey)))
+            return (row[0] for row in self.cnx.execute(sql, (lowkey, highkey)))
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
 
@@ -318,10 +313,8 @@ class YasonDB:
         except AttributeError:
             pass
 
-    def _add_to_indexes(self, iuid, doc):
-        """Add the document with the given iuid to the indexes.
-        This operation must be performed within a transaction.
-        """
+    def _add_to_indexes(self, id, doc):
+        "Add the document with the given id to the indexes."
         sql = "SELECT name, path FROM indexes"
         cursor = self.cnx.execute(sql)
         for name, path in cursor:
@@ -330,18 +323,16 @@ class YasonDB:
             except KeyError:
                 expression = pathparse(path)
                 self._index_cache[name] = expression
-            sql = f"INSERT INTO index_{name} (iuid, ikey) VALUES(?, ?)"
+            sql = f"INSERT INTO index_{name} (id, ikey) VALUES(?, ?)"
             for match in expression.find(doc):
-                self.cnx.execute(sql, (iuid, match.value))
+                self.cnx.execute(sql, (id, match.value))
 
-    def _remove_from_indexes(self, iuid):
-        """Remove the document with the given iuid from the indexes.
-        This operation must be performed within a transaction.
-        """
-        sql = "SELECT indexes.name FROM indexes, docs WHERE docs.iuid=?"
-        cursor = self.cnx.execute(sql, (iuid,))
+    def _remove_from_indexes(self, id):
+        "Remove the document with the given id from the indexes."
+        sql = "SELECT indexes.name FROM indexes, docs WHERE docs.id=?"
+        cursor = self.cnx.execute(sql, (id,))
         for (name,) in cursor:
-            self.cnx.execute(f"DELETE FROM index_{name} WHERE iuid=?", (iuid,))
+            self.cnx.execute(f"DELETE FROM index_{name} WHERE id=?", (id,))
 
 
 @click.group()
@@ -381,7 +372,7 @@ def dump(dbfile, indent):
     except IOError as error:
         raise click.ClickException(error)
     result = {"n_documents": len(db),
-              "docs": dict(list(db))}
+              "docs": dict([(id, db[id]) for id in db])}
     click.echo(_json_str(result, indent=indent))
 
 @cli.command()
@@ -390,16 +381,16 @@ def dump(dbfile, indent):
 @click.option("--handle",
               type=click.Choice(["add", "check", "update", "skip"]),
               default="add",
-              help="Handle conflicts (i.e. iuid already in database):"
+              help="Handle conflicts (i.e. id already in database):"
               " 'add': Add documents, after checking for conflicts."
               " 'check': Check for conflicts, do not actually add anything."
-              " 'update': Update documents with existing iuids, add all others."
-              " 'skip': Skip any documents with same iuid, add all others.")
+              " 'update': Update documents with existing ids, add all others."
+              " 'skip': Skip any documents with same id, add all others.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def load(dbfile, dumpfile, handle, indent):
     """Load the documents (not the indexes) from a dump file, allowing 
-    different handling of conflicts with existing iuid's in the database.
+    different handling of conflicts with existing id's in the database.
     """
     try:
         db = YasonDB(dbfile)
@@ -410,8 +401,8 @@ def load(dbfile, dumpfile, handle, indent):
     if handle == "add":
         with db:
             try:
-                for iuid, doc in docs.items():
-                    db.add(doc, iuid=iuid)
+                for id, doc in docs.items():
+                    db.add(doc, id=id)
             except KeyError as error:
                 raise click.ClickException("Conflict(s) between the dump file"
                                            " and the database.")
@@ -420,90 +411,90 @@ def load(dbfile, dumpfile, handle, indent):
     elif handle == "check":
         conflicts = {}
         with db:
-            for iuid, doc in docs.items():
-                if iuid in db:
-                    conflicts[iuid] = doc
+            for id, doc in docs.items():
+                if id in db:
+                    conflicts[id] = doc
         result["conflicts"] = len(conflicts)
         result["docs"] = conflicts
     elif handle == "update":
         with db:
-            for iuid, doc in docs.items():
-                db.update(iuid, doc, add=True)
+            for id, doc in docs.items():
+                db.update(id, doc, add=True)
         result["updated"] = len(docs)
     elif handle == "skip":
         skipped = {}
         with db:
-            for iuid, doc in docs.items():
+            for id, doc in docs.items():
                 try:
-                    db.add(doc, iuid=iuid)
+                    db.add(doc, id=id)
                 except KeyError:
-                    skipped[iuid] = doc
+                    skipped[id] = doc
         result["skipped"] = len(skipped)
         result["docs"] = docs
     click.echo(_json_str(result, indent=indent))
 
 @cli.command()
 @click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("iuid")
+@click.argument("id")
 @click.argument("doc", type=click.File("r"))
-def add(dbfile, iuid, doc):
-    "Add the given JSON document with the given iuid into the database."
+def add(dbfile, id, doc):
+    "Add the given JSON document with the given id into the database."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
         with db:
-            db.add(json.loads(doc.read()), iuid=iuid)
+            db.add(json.loads(doc.read()), id=id)
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
 @click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("iuid")
+@click.argument("id")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def get(dbfile, iuid, indent):
-    "Print the JSON document given its iuid."
+def get(dbfile, id, indent):
+    "Print the JSON document given its id."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
         click.ClickException(error)
     try:
-        click.echo(_json_str(db[iuid], indent=indent))
+        click.echo(_json_str(db[id], indent=indent))
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
 @click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("iuid")
+@click.argument("id")
 @click.argument("doc", type=click.File("r"))
 @click.option("-a", "--add", is_flag=True,
-              help="Add the document if the iuid does not already exist.")
-def update(dbfile, iuid, doc, add):
-    "Update the given JSON document the given iuid."
+              help="Add the document if the id does not already exist.")
+def update(dbfile, id, doc, add):
+    "Update the given JSON document the given id."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
         with db:
-            db.update(iuid, json.loads(doc.read()), add=add)
+            db.update(id, json.loads(doc.read()), add=add)
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
 @click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("iuid")
-def delete(dbfile, iuid):
-    "Delete the JSON document with the given iuid."
+@click.argument("id")
+def delete(dbfile, id):
+    "Delete the JSON document with the given id."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
         with db:
-            db.delete(iuid)
+            db.delete(id)
     except KeyError as error:
         raise click.ClickException(error)
 
@@ -585,7 +576,7 @@ def index_delete(dbfile, name):
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def find(dbfile, name, key, limit, offset, indent):
-    "Find the iuids and documents in the given index with the given key."
+    "Find the ids and documents in the given index with the given key."
     try:
         db = YasonDB(dbfile)
     except IOError as error:
@@ -595,13 +586,13 @@ def find(dbfile, name, key, limit, offset, indent):
     except ValueError:
         pass
     try:
-        contents = list(db.find(name, key, limit=limit, offset=offset))
+        ids = db.find(name, key, limit=limit, offset=offset)
     except KeyError as error:
         raise click.ClickException(error)
     result = {"index": name,
               "key": key,
-              "count": len(contents),
-              "docs": dict(contents)}
+              "count": len(ids),
+              "docs": dict([(id, db[id]) for id in ids])}
     click.echo(_json_str(result, indent))
 
 @cli.command()
@@ -616,7 +607,7 @@ def find(dbfile, name, key, limit, offset, indent):
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def range(dbfile, name, lowkey, highkey, limit, offset, indent):
-    """Find the iuids or documents in the given index within
+    """Find the ids and documents in the given index within
     the given inclusive range.
     """
     try:
@@ -632,15 +623,14 @@ def range(dbfile, name, lowkey, highkey, limit, offset, indent):
     except ValueError:
         pass
     try:
-        contents = list(db.range(name, lowkey, highkey,
-                                 limit=limit, offset=offset))
+        ids = list(db.range(name, lowkey, highkey, limit=limit, offset=offset))
     except KeyError as error:
         raise click.ClickException(error)
     result = {"index": name,
               "lowkey": lowkey,
               "highkey": highkey,
-              "count": len(contents),
-              "docs": dict(contents)}
+              "count": len(ids),
+              "docs": dict([(id, db[id]) for id in ids])}
     click.echo(_json_str(result, indent))
 
 @cli.command()
