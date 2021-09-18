@@ -6,14 +6,15 @@ import re
 import sqlite3
 import sys
 import uuid
+from typing import Any, Optional, List, Union
 
 import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
-NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
+_NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
 
 def _jsondoc_converter(data):
@@ -33,7 +34,7 @@ def _json_str(doc, indent):
 class YasonDB:
     "Yet another JSON document database."
 
-    def __init__(self, path, create=False):
+    def __init__(self, path: str, create: bool=False):
         """Connect to the Sqlite3 database file given by the path.
         The special path ':memory' indicates a RAM database.
         'create':
@@ -52,13 +53,13 @@ class YasonDB:
             self.check_valid()
         self._index_cache = {}  # key: path; value: expression (parsed path)
 
-    def _connect(self, path):
+    def _connect(self, path: str) -> Any:
         "Open the Sqlite3 connection."
         self.cnx = sqlite3.connect(path,
                                    detect_types=sqlite3.PARSE_DECLTYPES,
                                    isolation_level="DEFERRED")
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"YasonDB: {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
@@ -66,27 +67,27 @@ class YasonDB:
         sql = "SELECT id FROM docs ORDER BY id"
         return (row[0] for row in self.cnx.execute(sql))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
 
     def __del__(self):
         self.close()
 
-    def __getitem__(self, id):
+    def __getitem__(self, id) -> dict:
         cursor = self.cnx.execute("SELECT doc FROM docs WHERE id=?", (id,))
         row = cursor.fetchone()
         if not row:
             raise KeyError(f"No such document '{id}'.")
         return row[0]
 
-    def __setitem__(self, id, doc):
+    def __setitem__(self, id: str, doc: dict):
         "Add or update the document in the database with the given id."
         self.update(id, doc, add=True)
 
-    def __delitem__(self, id):
+    def __delitem__(self, id: str):
         self.delete(id)
 
-    def __contains__(self, id):
+    def __contains__(self, id: str):
         sql = "SELECT COUNT(*) FROM docs WHERE id=?"
         cursor = self.cnx.execute(sql, (id,))
         return bool(cursor.fetchone()[0])
@@ -129,14 +130,14 @@ class YasonDB:
         if not self.is_valid():
             raise ValueError("Could not read the database; not a YasonDB file?")
 
-    def get(self, id, default=None):
+    def get(self, id: str, default: Optional[dict]=None):
         "Retrieve the document given its id, else the default."
         try:
             return self[id]
         except KeyError:
             return default
 
-    def add(self, doc, id=None):
+    def add(self, doc: dict, id: Optional[str]=None) -> str:
         """Add the document to the database.
         If 'id' is not provided, create a UUID4 id.
         Raise ValueError if the document is not a dictionary.
@@ -155,7 +156,7 @@ class YasonDB:
         self._add_to_indexes(id, doc)
         return id
 
-    def update(self, id, doc, add=False):
+    def update(self, id: str, doc: dict, add: bool=False):
         """Update the document with the given id.
         Raise ValueError if the document is not a dictionary.
         Raise KeyError if no such id in the database and 'add' is False.
@@ -172,7 +173,7 @@ class YasonDB:
         else:
             raise KeyError(f"No such document '{id}' to update.")
 
-    def delete(self, id):
+    def delete(self, id: str):
         """Delete the document with the given id from the database.
         No error if the document with the given key does not exist.
         """
@@ -181,9 +182,9 @@ class YasonDB:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
-    def create_index(self, name, path):
+    def create_index(self, name: str, path: str):
         "Create an index for a given JSON path."
-        if not NAME_RX.match(name):
+        if not _NAME_RX.match(name):
             raise ValueError(f"Invalid index name '{name}'.")
         if self.index_exists(name):
             raise ValueError(f"Index '{name}' is already defined.")
@@ -208,7 +209,7 @@ class YasonDB:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
-    def index_exists(self, name):
+    def index_exists(self, name: str):
         "Does an index with the given name exist?"
         sql = "SELECT COUNT(*) FROM indexes WHERE name=?"
         cursor = self.cnx.execute(sql, (name,))
@@ -219,7 +220,7 @@ class YasonDB:
         sql = "SELECT name FROM indexes"
         return [name for (name,) in self.cnx.execute(sql)]
 
-    def get_index(self, name):
+    def get_index(self, name: str) -> dict:
         "Return definition and statistics for the named index."
         try:
             sql = "SELECT path FROM indexes WHERE name=?"
@@ -239,7 +240,7 @@ class YasonDB:
             result["max"] = cursor.fetchone()[0]
         return result
 
-    def get_index_keys(self, name):
+    def get_index_keys(self, name: str):
         "Return a generator to provide all tuples (id, key) in the index."
         try:
             cursor = self.cnx.execute(f"SELECT id, ikey FROM index_{name}")
@@ -247,7 +248,7 @@ class YasonDB:
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
 
-    def in_index(self, name, id):
+    def in_index(self, name: str, id: str) -> bool:
         "Is the given id in the named index?"
         try:
             sql = f"SELECT COUNT(*) FROM index_{name} WHERE id=?"
@@ -256,7 +257,7 @@ class YasonDB:
             raise KeyError(f"No such index '{name}'.")
         return bool(cursor.fetchone()[0])
 
-    def delete_index(self, name):
+    def delete_index(self, name: str):
         "Delete the index with the given name."
         if not self.index_exists(name):
             raise ValueError(f"No index '{name}' exists.")
@@ -264,7 +265,8 @@ class YasonDB:
         self.cnx.execute(f"DROP TABLE index_{name}")
         self._index_cache.pop(name, None)
 
-    def find(self, name, key, limit=None, offset=None):
+    def find(self, name: str, key:str,
+             limit: Optional[int]=None, offset: Optional[int]=None) -> List[str]:
         """Return a list of all ids for the documents having
         the given key in the named index.
         """
@@ -279,7 +281,8 @@ class YasonDB:
         except sqlite3.Error:
             raise KeyError(f"No such index '{name}'.")
 
-    def range(self, name, lowkey, highkey, limit=None, offset=None):
+    def range(self, name: str, lowkey: str, highkey: str, 
+              limit: Optional[int]=None, offset: Optional[int]=None) -> Any:
         """Return a generator over all ids for the documents having 
         a key in the named index within the given inclusive range.
         """
@@ -313,7 +316,7 @@ class YasonDB:
         except AttributeError:
             pass
 
-    def _add_to_indexes(self, id, doc):
+    def _add_to_indexes(self, id: str, doc: dict):
         "Add the document with the given id to the indexes."
         sql = "SELECT name, path FROM indexes"
         cursor = self.cnx.execute(sql)
@@ -327,7 +330,7 @@ class YasonDB:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
-    def _remove_from_indexes(self, id):
+    def _remove_from_indexes(self, id: str):
         "Remove the document with the given id from the indexes."
         sql = "SELECT indexes.name FROM indexes, docs WHERE docs.id=?"
         cursor = self.cnx.execute(sql, (id,))

@@ -42,3 +42,4 @@ ids = list(db.range("key_index", "k1", "k2"))
 if len(ids) == 2:
     print("'range' return ids within low and high inclusive.")
 ```
+
