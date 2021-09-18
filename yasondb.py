@@ -53,7 +53,7 @@ class YasonDB:
         self._index_cache = {}  # key: path; value: expression (parsed path)
 
     def _connect(self, path):
-        "Return the Sqlite3 connection."
+        "Open the Sqlite3 connection."
         self.cnx = sqlite3.connect(path,
                                    detect_types=sqlite3.PARSE_DECLTYPES,
                                    isolation_level="DEFERRED")
