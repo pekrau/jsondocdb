@@ -16,7 +16,7 @@ class Test(unittest.TestCase):
             os.remove(self.DBFILEPATH)
         except IOError:
             pass
-        self.db = yasondb.YasonDB(self.DBFILEPATH, create=True)
+        self.db = yasondb.Database(self.DBFILEPATH, create=True)
 
     def tearDown(self):
         try:
@@ -25,22 +25,19 @@ class Test(unittest.TestCase):
             pass
 
     def test_00_create(self):
-        self.assertTrue(self.db.is_valid())
         self.assertEqual(len(self.db), 0)
 
     def test_01_create_twice(self):
         with self.assertRaises(IOError):
-            db2 = yasondb.YasonDB(self.DBFILEPATH, create=True)
+            db2 = yasondb.Database(self.DBFILEPATH, create=True)
 
     def test_02_open_existing(self):
-        self.assertTrue(self.db.is_valid())
         self.db.close()
-        db2 = yasondb.YasonDB(self.DBFILEPATH)
-        self.assertTrue(db2.is_valid())
+        db2 = yasondb.Database(self.DBFILEPATH)
 
     def test_03_open_bad_file(self):
-        with self.assertRaises(ValueError):
-            db = yasondb.YasonDB(yasondb.__file__)
+        with self.assertRaises(yasondb.InvalidDatabaseError):
+            db = yasondb.Database(yasondb.__file__)
 
     def test_04_add_delete_document(self):
         with self.db:
@@ -82,7 +79,8 @@ class Test(unittest.TestCase):
             self.db.update(id, {"key": value})
         doc = self.db[id]
         self.assertEqual(doc["key"], value)
-        del self.db[id]
+        with self.db:
+            del self.db[id]
         self.assertFalse(id in self.db)
 
     def test_06_many(self):

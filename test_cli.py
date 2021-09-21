@@ -48,7 +48,7 @@ class Test(unittest.TestCase):
                               encoding="utf-8")
 
     def get_db():
-        return yason.YasonDB(self.DBFILEPATH)
+        return yason.Database(self.DBFILEPATH)
 
     def setUp(self):
         try:
@@ -67,7 +67,7 @@ class Test(unittest.TestCase):
     def test_00_check(self):
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, "YasonDB: 0 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, "Database has 0 documents, 0 indexes.\n")
 
     def test_01_add(self):
         with Docfile({"key": "value"}) as docfile:
@@ -75,7 +75,7 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 1 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 1 documents, 0 indexes.\n")
         
     def test_02_delete(self):
         with Docfile({"key": "value"}) as docfile:
@@ -83,12 +83,12 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 1 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 1 documents, 0 indexes.\n")
         p = self.execute("delete", "docid")
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 0 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 0 documents, 0 indexes.\n")
         
     def test_03_get(self):
         doc = {"key": "value"}
@@ -97,7 +97,7 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 1 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 1 documents, 0 indexes.\n")
         p = self.execute("get", "docid")
         self.assertEqual(p.returncode, 0)
         self.assertEqual(doc, json.loads(p.stdout))
@@ -109,7 +109,7 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 1 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 1 documents, 0 indexes.\n")
         p = self.execute("get", "docid")
         self.assertEqual(p.returncode, 0)
         self.assertEqual(doc, json.loads(p.stdout))
@@ -119,7 +119,7 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 1 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 1 documents, 0 indexes.\n")
         p = self.execute("get", "docid")
         self.assertEqual(p.returncode, 0)
         self.assertEqual(doc, json.loads(p.stdout))
@@ -132,12 +132,12 @@ class Test(unittest.TestCase):
             self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 5 documents, 0 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 5 documents, 0 indexes.\n")
         p = self.execute("index-create", "ix", "$.key")
         self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 5 documents, 1 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 5 documents, 1 indexes.\n")
         p = self.execute("index", "ix")
         self.assertEqual(p.returncode, 0)
         indexdef = json.loads(p.stdout)
@@ -156,7 +156,7 @@ class Test(unittest.TestCase):
             self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 5 documents, 1 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 5 documents, 1 indexes.\n")
         p = self.execute("find", "ix", "id3")
         self.assertEqual(p.returncode, 0)
         result = json.loads(p.stdout)
@@ -184,7 +184,7 @@ class Test(unittest.TestCase):
             self.assertEqual(p.returncode, 0)
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
-        self.assertEqual(p.stdout, f"YasonDB: 5 documents, 1 indexes.\n")
+        self.assertEqual(p.stdout, f"Database has 5 documents, 1 indexes.\n")
         p = self.execute("range", "ix", "id3", "id4")
         self.assertEqual(p.returncode, 0)
         result = json.loads(p.stdout)

@@ -1,10 +1,11 @@
-"Yet another JSON document database. Built on Sqlite3 in Python."
+"""Yet another JSON document database, with indexes and transactions.
+Built on Sqlite3 in Python.
+"""
 
 import json
 import os.path
 import re
 import sqlite3
-import sys
 import uuid
 from typing import Any, Optional, List, Union
 
@@ -12,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as pathparse
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 _NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -31,8 +32,8 @@ def _json_str(doc, indent):
     return json.dumps(doc, indent=indent, ensure_ascii=False)
 
 
-class YasonDB:
-    "Yet another JSON document database."
+class Database:
+    "Yet another JSON document database, with indexes and transactions."
 
     def __init__(self, path: str, create: bool=False):
         """Connect to the Sqlite3 database file given by the path.
@@ -50,7 +51,12 @@ class YasonDB:
             if not os.path.exists(path):
                 raise IOError(f"File '{path}' does not exist.")
             self._connect(path)
-            self.check_valid()
+            try:
+                self.cnx.execute("SELECT COUNT(*) FROM docs")
+                self.cnx.execute("SELECT COUNT(*) FROM indexes")
+            except sqlite3.Error:
+                raise InvalidDatabaseError("The database file is not a YasonDB file.")
+        self._in_transaction = False
         self._index_cache = {}  # key: path; value: expression (parsed path)
 
     def _connect(self, path: str) -> Any:
@@ -60,10 +66,10 @@ class YasonDB:
                                    isolation_level="DEFERRED")
 
     def __str__(self) -> str:
-        return f"YasonDB: {len(self)} documents, {len(self.get_indexes())} indexes."
+        return f"Database has {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
-        "Return a generator over id for all documents."
+        "Return a generator over ids for all documents."
         sql = "SELECT id FROM docs ORDER BY id"
         return (row[0] for row in self.cnx.execute(sql))
 
@@ -92,18 +98,6 @@ class YasonDB:
         cursor = self.cnx.execute(sql, (id,))
         return bool(cursor.fetchone()[0])
 
-    def __enter__(self):
-        "Begin a transaction."
-        self.cnx.execute("BEGIN")
-
-    def __exit__(self, type, value, tb):
-        "End a transaction; commit if successful, rollback if exception."
-        if type is None:
-            self.cnx.execute("COMMIT")
-        else:
-            self.cnx.execute("ROLLBACK")
-        return False
-
     def initialize(self):
         "Set up the tables to hold documents and index definitions."
         try:
@@ -116,19 +110,43 @@ class YasonDB:
         except sqlite3.Error:
             raise ValueError("Could not initialize the YasonDB database.")
 
-    def is_valid(self):
-        "Is the database a valid YasonDB one?"
-        try:
-            self.cnx.execute("SELECT COUNT(*) FROM docs")
-            self.cnx.execute("SELECT COUNT(*) FROM indexes")
-        except sqlite3.Error:
-            return False
-        return True
+    @property
+    def in_transaction(self):
+        "Are we within a transaction?"
+        return self._in_transaction
 
-    def check_valid(self):
-        "Check that the database is a valid YasonDB one."
-        if not self.is_valid():
-            raise ValueError("Could not read the database; not a YasonDB file?")
+    def begin(self):
+        "Begin a transaction."
+        if self.in_transaction:
+            raise AlreadyInTransactionError
+        self.cnx.execute("BEGIN")
+        self._in_transaction = True
+
+    def commit(self):
+        "Commit the transaction."
+        if not self.in_transaction:
+            raise NotInTransactionError
+        self.cnx.execute("COMMIT")
+        self._in_transaction = False
+
+    def rollback(self):
+        "Roll back the transaction."
+        if not self.in_transaction:
+            raise NotInTransactionError
+        self.cnx.execute("ROLLBACK")
+        self._in_transaction = False
+
+    def __enter__(self):
+        "Begin a transaction."
+        self.begin()
+
+    def __exit__(self, type, value, tb):
+        "End a transaction; commit if OK, rollback if not."
+        if type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
 
     def get(self, id: str, default: Optional[dict]=None):
         "Retrieve the document given its id, else the default."
@@ -140,10 +158,13 @@ class YasonDB:
     def add(self, doc: dict, id: Optional[str]=None) -> str:
         """Add the document to the database.
         If 'id' is not provided, create a UUID4 id.
+        Raise NotInTransaction if not within a transaction context.
         Raise ValueError if the document is not a dictionary.
         Raise KeyError if the id already exists in the database.
         Return the id.
         """
+        if not self.in_transaction:
+            raise NotInTransactionError
         if not isinstance(doc, dict):
             raise ValueError("'doc' must be an instance of 'dict'.")
         if not id:
@@ -158,9 +179,12 @@ class YasonDB:
 
     def update(self, id: str, doc: dict, add: bool=False):
         """Update the document with the given id.
+        Raise NotInTransaction if not within a transaction context.
         Raise ValueError if the document is not a dictionary.
         Raise KeyError if no such id in the database and 'add' is False.
         """
+        if not self.in_transaction:
+            raise NotInTransactionError
         if not isinstance(doc, dict):
             raise ValueError("'doc' must be an instance of 'dict'.")
         sql = "UPDATE docs SET doc=? WHERE id=?"
@@ -176,14 +200,21 @@ class YasonDB:
     def delete(self, id: str):
         """Delete the document with the given id from the database.
         No error if the document with the given key does not exist.
+        Raise NotInTransaction if not within a transaction context.
         """
+        if not self.in_transaction:
+            raise NotInTransactionError
         self._remove_from_indexes(id)
         cursor = self.cnx.execute("DELETE FROM docs WHERE id=?", (id,))
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
     def create_index(self, name: str, path: str):
-        "Create an index for a given JSON path."
+        """Create an index for a given JSON path.
+        Raise NotInTransaction if not within a transaction context.
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError
         if not _NAME_RX.match(name):
             raise ValueError(f"Invalid index name '{name}'.")
         if self.index_exists(name):
@@ -258,7 +289,11 @@ class YasonDB:
         return bool(cursor.fetchone()[0])
 
     def delete_index(self, name: str):
-        "Delete the index with the given name."
+        """Delete the index with the given name.
+        Raise NotInTransaction if not within a transaction context.
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError
         if not self.index_exists(name):
             raise ValueError(f"No index '{name}' exists.")
         self.cnx.execute("DELETE FROM indexes WHERE name=?", (name,))
@@ -266,7 +301,8 @@ class YasonDB:
         self._index_cache.pop(name, None)
 
     def find(self, name: str, key:str,
-             limit: Optional[int]=None, offset: Optional[int]=None) -> List[str]:
+             limit: Optional[int]=None,
+             offset: Optional[int]=None) -> List[str]:
         """Return a list of all ids for the documents having
         the given key in the named index.
         """
@@ -338,6 +374,23 @@ class YasonDB:
             self.cnx.execute(f"DELETE FROM index_{name} WHERE id=?", (id,))
 
 
+class BaseError(Exception):
+    "Base class for YasonDB-specific errors."
+    pass
+
+class InvalidDatabaseError(BaseError):
+    "The file is not a valid YasonDB database."
+    pass
+
+class AlreadyInTransactionError(BaseError):
+    "Attempt to begin a transaction when already within one."
+    pass
+
+class NotInTransactionError(BaseError):
+    "Attempted operation requires being in a transaction."
+    pass
+
+
 @click.group()
 def cli():
     "YasonDB command-line interface."
@@ -350,7 +403,7 @@ def create(dbfile):
     if os.path.exists(dbfile):
         raise click.BadParameter(f"File {dbfile} already exists.")
     try:
-        YasonDB(dbfile, create=True)
+        Database(dbfile, create=True)
     except IOError as error:
         raise click.ClickException(error)
 
@@ -359,8 +412,8 @@ def create(dbfile):
 def check(dbfile):
     "Check that the given file path refers to a YasonDB file."
     try:
-        db = YasonDB(dbfile)
-    except (IOError, ValueError) as error:
+        db = Database(dbfile)
+    except (IOError, InvalidDatabaseError) as error:
         raise click.ClickException(error)
     click.echo(str(db))
 
@@ -371,7 +424,7 @@ def check(dbfile):
 def dump(dbfile, indent):
     "Write out all JSON documents from the database."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     result = {"n_documents": len(db),
@@ -396,7 +449,7 @@ def load(dbfile, dumpfile, handle, indent):
     different handling of conflicts with existing id's in the database.
     """
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     docs = json.load(dumpfile).get("docs") or {}
@@ -443,7 +496,7 @@ def load(dbfile, dumpfile, handle, indent):
 def add(dbfile, id, doc):
     "Add the given JSON document with the given id into the database."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -460,7 +513,7 @@ def add(dbfile, id, doc):
 def get(dbfile, id, indent):
     "Print the JSON document given its id."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         click.ClickException(error)
     try:
@@ -477,7 +530,7 @@ def get(dbfile, id, indent):
 def update(dbfile, id, doc, add):
     "Update the given JSON document the given id."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -492,7 +545,7 @@ def update(dbfile, id, doc, add):
 def delete(dbfile, id):
     "Delete the JSON document with the given id."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -511,7 +564,7 @@ def delete(dbfile, id):
 def index(dbfile, name, keys, indent):
     "Show the index definition and keys."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -529,7 +582,7 @@ def index(dbfile, name, keys, indent):
 def indexes(dbfile, indent):
     "List the current indexes."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     result = {"indexes": {}}
@@ -544,7 +597,7 @@ def indexes(dbfile, indent):
 def index_create(dbfile, name, path):
     "Create an index with the given name and JSONPath path."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     with db:
@@ -559,7 +612,7 @@ def index_create(dbfile, name, path):
 def index_delete(dbfile, name):
     "Delete the index with the given name."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     with db:
@@ -581,7 +634,7 @@ def index_delete(dbfile, name):
 def find(dbfile, name, key, limit, offset, indent):
     "Find the ids and documents in the given index with the given key."
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -614,7 +667,7 @@ def range(dbfile, name, lowkey, highkey, limit, offset, indent):
     the given inclusive range.
     """
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -644,7 +697,7 @@ def backup(dbfile, backupfile):
     BACKUPFILE, in a safe manner.
     """
     try:
-        db = YasonDB(dbfile)
+        db = Database(dbfile)
         db.backup(backupfile)
     except IOError as error:
         raise click.ClickException(error)
