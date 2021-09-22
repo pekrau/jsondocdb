@@ -32,6 +32,11 @@ with db:
     except KeyError as error:
         print(error)
 
+# Search all documents for those matching a JSON path and return values.
+
+found = db.search("$.key")
+print(len(found), "documents in search for those with item 'key'.")
+
 # A named index using JSONPath: documents giving one or more matches
 # with the path will be present in the index.
 
@@ -40,10 +45,10 @@ with db:
     db["in_index"] = {"key": "k3"}
     db["not_in_index"] = {"key2": "k4"}
 
-# 'find' returns a list of id's for matching documents from the named index.
+# 'lookup' returns a list of id's for matching documents from the named index.
 # Note that this operation does not require a transaction.
 
-found = db.find("key_index", "k2")
+found = db.lookup("key_index", "k2")
 if len(found) == 1 and db[found[0]] == doc:
     print("Found doc is equal to previously input.")
 
@@ -78,7 +83,7 @@ Return a string with info on number of documents and indexes.
 
 ### `iter(db)`
 
-Return an iterator over id's for all documents in the database.
+Return an iterator over ids for all documents in the database.
 
 ### `len(db)`
 
@@ -179,6 +184,14 @@ Raises:
 - `KeyError`: No such document id.
 - `YasonDB.NotInTransaction`
 
+### `db.search(jsonpath, include_docs=False)`
+
+Search all documents and return those that match the given JSON path.
+The result is a list of dict(key, id[, doc]).
+
+Raises:
+- ValueError: Invalid JSON path.
+
 ### `db.index_exists(indexname)
 
 Does the named index exist?
@@ -188,7 +201,8 @@ Does the named index exist?
 Create an index for a given JSON path.
 
 Raises:
-- `ValueError`: If the indexname is invalid or already in use.
+- `ValueError`: The indexname is invalid or already in use, or the given
+  JSON path is invalid.
 - `YasonDB.NotInTransaction`
 
 ### `db.get_indexes()`
@@ -221,7 +235,7 @@ Raises:
 - `KeyError`: If there is no such index.
 - `YasonDB.NotInTransaction`
 
-### `db.find(indexname, key, limit=None, offset=None)`
+### `db.lookup(indexname, key)`
 
 Return a list of all ids for the documents having
 the given key in the named index.
@@ -233,6 +247,9 @@ Raises:
 
 Return a generator over all ids for the documents having 
 a key in the named index within the given inclusive range.
+
+- `limit`: Limit the number of ids returned.
+- `offset`: Skip the first number of ids found.
 
 Raises:
 - `KeyError`: If there is no such index.

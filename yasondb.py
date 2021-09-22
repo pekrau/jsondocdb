@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.6.3"
+__version__ = "0.7.0"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -84,7 +84,7 @@ class Database:
         return f"Database has {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
-        "Return a generator over id's for all documents in the database."
+        "Return a generator over ids for all documents in the database."
         sql = "SELECT id FROM docs ORDER BY id"
         return (row[0] for row in self.cnx.execute(sql))
 
@@ -236,6 +236,27 @@ class Database:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
+    def search(self, jsonpath, include_docs=False):
+        """Search all documents and return those that match the given JSON path.
+        The result is a list of dict(key, id[, doc]).
+
+        Raises:
+        - ValueError: Invalid JSON path.
+        """
+        try:
+            expression = jsonpathparse(jsonpath)
+        except JSONPathError as error:
+            raise ValueError(f"Invalid JSON path: {error}")
+        result = []
+        sql = "SELECT id, doc FROM docs"
+        cursor = self.cnx.execute(sql)
+        for id, doc in cursor:
+            for match in expression.find(doc):
+                result.append({"key": match.value, "id": id})
+                if include_docs:
+                    result[-1]["doc"] = doc
+        return result
+
     def index_exists(self, indexname: str) -> bool:
         "Does the named index exist?"
         try:
@@ -248,7 +269,8 @@ class Database:
         """Create an index for a given JSON path.
 
         Raises:
-        - ValueError: If the indexname is invalid or already in use.
+        - ValueError: The indexname is invalid or already in use, or
+          the given JSON path is invalid.
         - NotInTransaction
         """
         if not self.in_transaction:
@@ -343,9 +365,7 @@ class Database:
         self.cnx.execute(f"DROP TABLE index_{indexname}")
         self._index_cache.pop(indexname, None)
 
-    def find(self, indexname: str, key:str,
-             limit: Optional[int]=None,
-             offset: Optional[int]=None) -> List[str]:
+    def lookup(self, indexname: str, key:str):
         """Return a list of all ids for the documents having
         the given key in the named index.
 
@@ -354,10 +374,6 @@ class Database:
         """
         sql = f"SELECT docs.id FROM index_{indexname}, docs" \
             f" WHERE key=? AND docs.id=index_{indexname}.id"
-        if limit is not None:
-            sql += f" LIMIT {limit}"
-        if offset is not None:
-            sql += f" OFFSET {offset}"
         try:
             return [row[0] for row in self.cnx.execute(sql, (key,))]
         except sqlite3.Error:
@@ -502,7 +518,7 @@ def dump(dbfilepath, indent):
               help="Pretty-print the resulting JSON document.")
 def load(dbfilepath, dumpfile, handle, indent):
     """Load the documents (not the indexes) from a file produced by 'dump',
-    allowing handling of conflicts with existing id's in the database.
+    allowing handling of conflicts with existing ids in the database.
     """
     try:
         db = Database(dbfilepath)
@@ -614,6 +630,23 @@ def delete(dbfilepath, id):
 
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("jsonpath")
+@click.option("-I", "--indent", default=2,
+              help="Pretty-print the resulting JSON document.")
+def search(dbfilepath, jsonpath, indent):
+    "Print the keys, ids and documents matching the given JSONPATH."
+    try:
+        db = Database(dbfilepath)
+    except IOError as error:
+        raise click.ClickException(error)
+    try:
+        result = db.search(jsonpath, include_docs=True)
+    except KeyError as error:
+        raise click.ClickException(error)
+    click.echo(_json_str(result, indent))
+
+@cli.command()
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("indexname")
 @click.option("--keys", is_flag=True, 
               help="List the contents of the named index.")
@@ -685,13 +718,9 @@ def index_delete(dbfilepath, indexname):
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("indexname")
 @click.argument("key")
-@click.option("-l", "--limit", default=100,
-              help="Limit the number of result items.")
-@click.option("-o", "--offset", default=None, type=int,
-              help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def find(dbfilepath, indexname, key, limit, offset, indent):
+def lookup(dbfilepath, indexname, key, indent):
     """Print the ids and documents in the index INDEXNAME with the given KEY
     in the database at DBFILEPATH.
     """
@@ -704,7 +733,7 @@ def find(dbfilepath, indexname, key, limit, offset, indent):
     except ValueError:
         pass
     try:
-        ids = db.find(indexname, key, limit=limit, offset=offset)
+        ids = db.lookup(indexname, key)
     except KeyError as error:
         raise click.ClickException(error)
     result = {"index": indexname,

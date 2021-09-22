@@ -143,7 +143,7 @@ class Test(unittest.TestCase):
         self.assertEqual(self.db.get_index(index_name1)["count"], 4)
         self.assertEqual(self.db.get_index(index_name2)["count"], 2)
 
-    def test_10_find(self):
+    def test_10_lookup(self):
         with self.db:
             doc = {"key": "akey", "key2": 1, "field": 2}
             id = self.db.add(doc)
@@ -158,11 +158,11 @@ class Test(unittest.TestCase):
         self.assertEqual(info["count"], 4)
         self.assertEqual(info["min"], "akey")
         self.assertEqual(info["max"], "key3")
-        result = self.db.find(index_name1, "akey")
+        result = self.db.lookup(index_name1, "akey")
         self.assertTrue(len(result), 1)
         self.assertEqual(result[0], id)
         self.assertEqual(self.db[result[0]], doc)
-        result = self.db.find(index_name2, 4)
+        result = self.db.lookup(index_name2, 4)
         self.assertTrue(len(result), 2)
 
     def test_11_range(self):

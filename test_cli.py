@@ -146,7 +146,7 @@ class Test(unittest.TestCase):
         self.assertTrue("count" in indexdef)
         self.assertEqual(indexdef["count"], 5)
 
-    def test_06_find(self):
+    def test_06_lookup(self):
         p = self.execute("index-create", "ix", "$.key")
         self.assertEqual(p.returncode, 0)
         for number in range(5):
@@ -157,14 +157,14 @@ class Test(unittest.TestCase):
         p = self.execute("check")
         self.assertEqual(p.returncode, 0)
         self.assertEqual(p.stdout, f"Database has 5 documents, 1 indexes.\n")
-        p = self.execute("find", "ix", "id3")
+        p = self.execute("lookup", "ix", "id3")
         self.assertEqual(p.returncode, 0)
         result = json.loads(p.stdout)
         self.assertTrue("count" in result)
         self.assertEqual(result["count"], 1)
         self.assertTrue("docs" in result)
         self.assertEqual(list(result["docs"].keys()), ["docid3"])
-        p = self.execute("find", "ix", "id3")
+        p = self.execute("lookup", "ix", "id3")
         self.assertEqual(p.returncode, 0)
         result = json.loads(p.stdout)
         self.assertTrue("count" in result)

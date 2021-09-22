@@ -28,6 +28,11 @@ with db:
     except KeyError as error:
         print(error)
 
+# Search all documents for those matching a JSON path and return values.
+
+found = db.search("$.key")
+print(len(found), "documents in search for those with item 'key'.")
+
 # A named index using JSONPath: documents giving one or more matches
 # with the path will be present in the index.
 
@@ -36,10 +41,10 @@ with db:
     db["in_index"] = {"key": "k3"}
     db["not_in_index"] = {"key2": "k4"}
 
-# 'find' returns a list of id's for matching documents from the named index.
+# 'lookup' returns a list of id's for matching documents from the named index.
 # Note that this operation does not require a transaction.
 
-found = db.find("key_index", "k2")
+found = db.lookup("key_index", "k2")
 if len(found) == 1 and db[found[0]] == doc:
     print("Found doc is equal to previously input.")
 
