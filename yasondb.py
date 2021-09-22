@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -36,17 +36,30 @@ class Database:
     "Yet another JSON document database, with indexes and transactions."
 
     def __init__(self, dbfilepath: str, create: bool=False):
-        """Connect to the Sqlite3 database file given by the dbfilepath.
-        The special dbfilepath ':memory' indicates a RAM database.
+        """Connect to the YasonDB database file given by the dbfilepath.
+        The special dbfilepath ':memory' indicates an in-memory database.
         'create':
-          - False: The database file must exist, and be a YasonDB database.
-          - True: The database file must not exist; created and initialized.
+          - False: The database file must exist, and must be a YasonDB database.
+          - True: Create and initialize the file. It must not exist.
+        Raises:
+        - IOError: The file exists when it shouldn't, and vice versa,
+          depending on `create`.
+        - ValueError: Could not initialize the YasonDB database.
+        - YasonDB.InvalidDatabaseError: The database file is not a YasonDB file.
         """
         if create:
             if os.path.exists(dbfilepath):
                 raise IOError(f"File '{dbfilepath}' already exists.")
             self._connect(dbfilepath)
-            self.initialize()
+            try:
+                self.cnx.execute("CREATE TABLE docs"
+                                 " (id TEXT PRIMARY KEY,"
+                                 "  doc JSONDOC NOT NULL)")
+                self.cnx.execute("CREATE TABLE indexes"
+                                 " (indexname TEXT PRIMARY KEY,"
+                                 "  jsonpath TEXT NOT NULL)")
+            except sqlite3.Error:
+                raise ValueError("Could not initialize the YasonDB database.")
         else:
             if not os.path.exists(dbfilepath):
                 raise IOError(f"File '{dbfilepath}' does not exist.")
@@ -66,20 +79,27 @@ class Database:
                                    isolation_level="DEFERRED")
 
     def __str__(self) -> str:
+        "Return a string with info on number of documents and indexes."
         return f"Database has {len(self)} documents, {len(self.get_indexes())} indexes."
 
     def __iter__(self):
-        "Return a generator over ids for all documents."
+        "Return a generator over id's for all documents in the database."
         sql = "SELECT id FROM docs ORDER BY id"
         return (row[0] for row in self.cnx.execute(sql))
 
     def __len__(self) -> int:
+        "Return the number of documents in the database."
         return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
 
     def __del__(self):
+        "Close the database connection."
         self.close()
 
     def __getitem__(self, id) -> dict:
+        """Return the document with the given id.
+        Raises:
+        - YasonDb.NotInTransaction
+        """
         cursor = self.cnx.execute("SELECT doc FROM docs WHERE id=?", (id,))
         row = cursor.fetchone()
         if not row:
@@ -91,53 +111,25 @@ class Database:
         self.update(id, doc, add=True)
 
     def __delitem__(self, id: str):
+        """Delete the document with the given id from the database.
+        Raises:
+        - KeyError: No such document id.
+        - YasonDb.NotInTransaction
+        """
         self.delete(id)
 
     def __contains__(self, id: str):
+        "Return `True` if the given id is in the database, else `False`."
         sql = "SELECT COUNT(*) FROM docs WHERE id=?"
         cursor = self.cnx.execute(sql, (id,))
         return bool(cursor.fetchone()[0])
 
-    def initialize(self):
-        "Set up the tables to hold documents and index definitions."
-        try:
-            self.cnx.execute("CREATE TABLE docs"
-                             " (id TEXT PRIMARY KEY,"
-                             "  doc JSONDOC NOT NULL)")
-            self.cnx.execute("CREATE TABLE indexes"
-                             " (indexname TEXT PRIMARY KEY,"
-                             "  jsonpath TEXT NOT NULL)")
-        except sqlite3.Error:
-            raise ValueError("Could not initialize the YasonDB database.")
-
-    @property
-    def in_transaction(self):
-        "Are we within a transaction?"
-        return self._in_transaction
-
-    def begin(self):
-        "Begin a transaction."
-        if self.in_transaction:
-            raise AlreadyInTransactionError
-        self.cnx.execute("BEGIN")
-        self._in_transaction = True
-
-    def commit(self):
-        "Commit the transaction."
-        if not self.in_transaction:
-            raise NotInTransactionError
-        self.cnx.execute("COMMIT")
-        self._in_transaction = False
-
-    def rollback(self):
-        "Roll back the transaction."
-        if not self.in_transaction:
-            raise NotInTransactionError
-        self.cnx.execute("ROLLBACK")
-        self._in_transaction = False
-
     def __enter__(self):
-        "Begin a transaction."
+        """A context manager for a transaction. All operations that modify
+        the data must occur within a transaction.
+        If all goes well, the transaction is committed.
+        If an error occurs within the block, the transaction is rolled back.
+        """
         self.begin()
 
     def __exit__(self, type, value, tb):
@@ -147,6 +139,36 @@ class Database:
         else:
             self.rollback()
         return False
+
+    @property
+    def in_transaction(self):
+        "Are we within a transaction?"
+        return self._in_transaction
+
+    def begin(self):
+        "Start a transaction. Use the context manager instead."
+        if self.in_transaction:
+            raise AlreadyInTransactionError
+        self.cnx.execute("BEGIN")
+        self._in_transaction = True
+
+    def commit(self):
+        """End the transaction, storing the modifications. Use the context
+        manager instead.
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError
+        self.cnx.execute("COMMIT")
+        self._in_transaction = False
+
+    def rollback(self):
+        """End the transaction, discaring the modifications. Use the context
+        manager instead.
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError
+        self.cnx.execute("ROLLBACK")
+        self._in_transaction = False
 
     def get(self, id: str, default: Optional[dict]=None):
         "Retrieve the document given its id, else the default."
@@ -158,10 +180,11 @@ class Database:
     def add(self, doc: dict, id: Optional[str]=None) -> str:
         """Add the document to the database.
         If 'id' is not provided, create a UUID4 id.
-        Raise NotInTransaction if not within a transaction context.
-        Raise ValueError if the document is not a dictionary.
-        Raise KeyError if the id already exists in the database.
         Return the id.
+        Raises:
+        - ValueError if doc is not a dictionary.
+        - KeyError if the id already exists in the database.
+        - NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -179,9 +202,10 @@ class Database:
 
     def update(self, id: str, doc: dict, add: bool=False):
         """Update the document with the given id.
-        Raise NotInTransaction if not within a transaction context.
-        Raise ValueError if the document is not a dictionary.
-        Raise KeyError if no such id in the database and 'add' is False.
+        Raises:
+        - ValueError if the document is not a dictionary.
+        - KeyError if no such id in the database and 'add' is False.
+        - NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -199,8 +223,9 @@ class Database:
 
     def delete(self, id: str):
         """Delete the document with the given id from the database.
-        No error if the document with the given key does not exist.
-        Raise NotInTransaction if not within a transaction context.
+        Raises:
+        - KeyError: No such document id.
+        - YasonDB.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -209,9 +234,17 @@ class Database:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
+    def index_exists(self, indexname: str) -> bool:
+        "Does the named index exist?"
+        try:
+            self.get_index(indexname)
+            return True
+        except KeyError:
+            return False
+
     def create_index(self, indexname: str, jsonpath: str):
         """Create an index for a given JSON path.
-        Raise NotInTransaction if not within a transaction context.
+        Raises NotInTransaction if not within a transaction.
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -240,12 +273,6 @@ class Database:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
-    def index_exists(self, indexname: str):
-        "Does the named index exist?"
-        sql = "SELECT COUNT(*) FROM indexes WHERE indexname=?"
-        cursor = self.cnx.execute(sql, (indexname,))
-        return bool(cursor.fetchone()[0])
-
     def get_indexes(self):
         "Return the list names for the current indexes."
         sql = "SELECT indexname FROM indexes"
@@ -258,7 +285,7 @@ class Database:
             cursor = self.cnx.execute(sql, (indexname,))
             row = cursor.fetchone()
             if not row:
-                raise ValueError
+                raise KeyError
             result = {"jsonpath": row[0]}
             cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{indexname}")
             result["count"] = cursor.fetchone()[0]
@@ -290,11 +317,11 @@ class Database:
 
     def delete_index(self, indexname: str):
         """Delete the named index.
-        Raise NotInTransaction if not within a transaction context.
+        Raises NotInTransaction if not within a transaction.
         """
         if not self.in_transaction:
             raise NotInTransactionError
-        if not self.index_exists(indexname):
+        if not self.get_index(indexname):
             raise ValueError(f"No index '{indexname}' exists.")
         self.cnx.execute("DELETE FROM indexes WHERE indexname=?", (indexname,))
         self.cnx.execute(f"DROP TABLE index_{indexname}")
