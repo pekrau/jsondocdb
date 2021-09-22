@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -71,7 +71,6 @@ class Database:
                 self.cnx.execute("SELECT COUNT(*) FROM indexes")
             except sqlite3.Error:
                 raise InvalidDatabaseError("The database file is not a YasonDB file.")
-        self._in_transaction = False
         self._index_cache = {}  # key: jsonpath; value: parsed jsonpath
 
     def _connect(self, dbfilepath: str) -> Any:
@@ -146,14 +145,13 @@ class Database:
     @property
     def in_transaction(self):
         "Are we within a transaction?"
-        return self._in_transaction
+        return self.cnx.in_transaction
 
     def begin(self):
         "Start a transaction. Use the context manager instead."
         if self.in_transaction:
             raise InTransactionError
         self.cnx.execute("BEGIN")
-        self._in_transaction = True
 
     def commit(self):
         """End the transaction, storing the modifications.
@@ -162,7 +160,6 @@ class Database:
         if not self.in_transaction:
             raise NotInTransactionError
         self.cnx.execute("COMMIT")
-        self._in_transaction = False
 
     def rollback(self):
         """End the transaction, discaring the modifications.
@@ -171,7 +168,6 @@ class Database:
         if not self.in_transaction:
             raise NotInTransactionError
         self.cnx.execute("ROLLBACK")
-        self._in_transaction = False
 
     def get(self, id: str, default: Optional[dict]=None):
         "Retrieve the document given its id, else the default."
