@@ -141,8 +141,8 @@ class Test(unittest.TestCase):
         p = self.execute("index", "ix")
         self.assertEqual(p.returncode, 0)
         indexdef = json.loads(p.stdout)
-        self.assertTrue("path" in indexdef)
-        self.assertEqual(indexdef["path"], "$.key")
+        self.assertTrue("jsonpath" in indexdef)
+        self.assertEqual(indexdef["jsonpath"], "$.key")
         self.assertTrue("count" in indexdef)
         self.assertEqual(indexdef["count"], 5)
 

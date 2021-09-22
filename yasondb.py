@@ -1,5 +1,5 @@
 """Yet another JSON document database, with indexes and transactions.
-Built on Sqlite3 in Python.
+Python using Sqlite3 and JSONPath.
 """
 
 import json
@@ -11,11 +11,11 @@ from typing import Any, Optional, List, Union
 
 import click
 from jsonpath_ng import JSONPathError
-from jsonpath_ng.ext import parse as pathparse
+from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
-_NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
+_INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
 
 def _jsondoc_converter(data):
@@ -35,33 +35,33 @@ def _json_str(doc, indent):
 class Database:
     "Yet another JSON document database, with indexes and transactions."
 
-    def __init__(self, path: str, create: bool=False):
-        """Connect to the Sqlite3 database file given by the path.
-        The special path ':memory' indicates a RAM database.
+    def __init__(self, dbfilepath: str, create: bool=False):
+        """Connect to the Sqlite3 database file given by the dbfilepath.
+        The special dbfilepath ':memory' indicates a RAM database.
         'create':
           - False: The database file must exist, and be a YasonDB database.
           - True: The database file must not exist; created and initialized.
         """
         if create:
-            if os.path.exists(path):
-                raise IOError(f"File '{path}' already exists.")
-            self._connect(path)
+            if os.path.exists(dbfilepath):
+                raise IOError(f"File '{dbfilepath}' already exists.")
+            self._connect(dbfilepath)
             self.initialize()
         else:
-            if not os.path.exists(path):
-                raise IOError(f"File '{path}' does not exist.")
-            self._connect(path)
+            if not os.path.exists(dbfilepath):
+                raise IOError(f"File '{dbfilepath}' does not exist.")
+            self._connect(dbfilepath)
             try:
                 self.cnx.execute("SELECT COUNT(*) FROM docs")
                 self.cnx.execute("SELECT COUNT(*) FROM indexes")
             except sqlite3.Error:
                 raise InvalidDatabaseError("The database file is not a YasonDB file.")
         self._in_transaction = False
-        self._index_cache = {}  # key: path; value: expression (parsed path)
+        self._index_cache = {}  # key: jsonpath; value: parsed jsonpath
 
-    def _connect(self, path: str) -> Any:
+    def _connect(self, dbfilepath: str) -> Any:
         "Open the Sqlite3 connection."
-        self.cnx = sqlite3.connect(path,
+        self.cnx = sqlite3.connect(dbfilepath,
                                    detect_types=sqlite3.PARSE_DECLTYPES,
                                    isolation_level="DEFERRED")
 
@@ -105,8 +105,8 @@ class Database:
                              " (id TEXT PRIMARY KEY,"
                              "  doc JSONDOC NOT NULL)")
             self.cnx.execute("CREATE TABLE indexes"
-                             " (name TEXT PRIMARY KEY,"
-                             "  path TEXT NOT NULL)")
+                             " (indexname TEXT PRIMARY KEY,"
+                             "  jsonpath TEXT NOT NULL)")
         except sqlite3.Error:
             raise ValueError("Could not initialize the YasonDB database.")
 
@@ -209,105 +209,105 @@ class Database:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
-    def create_index(self, name: str, path: str):
+    def create_index(self, indexname: str, jsonpath: str):
         """Create an index for a given JSON path.
         Raise NotInTransaction if not within a transaction context.
         """
         if not self.in_transaction:
             raise NotInTransactionError
-        if not _NAME_RX.match(name):
-            raise ValueError(f"Invalid index name '{name}'.")
-        if self.index_exists(name):
-            raise ValueError(f"Index '{name}' is already defined.")
+        if not _INDEXNAME_RX.match(indexname):
+            raise ValueError(f"Invalid index name '{indexname}'.")
+        if self.index_exists(indexname):
+            raise ValueError(f"Index '{indexname}' is already defined.")
         try:
-            expression = pathparse(path)
+            expression = jsonpathparse(jsonpath)
         except JSONPathError as error:
             raise ValueError(f"Invalid JSON path: {error}")
         try:
-            sql = "INSERT INTO indexes (name, path) VALUES (?, ?)"
-            self.cnx.execute(sql, (name, path))
-            sql = f"CREATE TABLE index_{name}" \
-                " (id TEXT PRIMARY KEY, ikey NOT NULL)"
+            sql = "INSERT INTO indexes (indexname, jsonpath) VALUES (?, ?)"
+            self.cnx.execute(sql, (indexname, jsonpath))
+            sql = f"CREATE TABLE index_{indexname}" \
+                " (id TEXT PRIMARY KEY, key NOT NULL)"
             self.cnx.execute(sql)
-            sql = f"CREATE INDEX index_{name}_ix ON index_{name} (ikey)"
+            sql = f"CREATE INDEX index_{indexname}_ix ON index_{indexname} (key)"
         except sqlite3.Error as error:
-            raise ValueError(f"Could not create index '{name}': {error}")
-        self._index_cache[name] = expression
+            raise ValueError(f"Could not create index '{indexname}': {error}")
+        self._index_cache[indexname] = expression
         sql = "SELECT id, doc FROM docs"
         cursor = self.cnx.execute(sql)
-        sql = f"INSERT INTO index_{name} (id, ikey) VALUES(?, ?)"
+        sql = f"INSERT INTO index_{indexname} (id, key) VALUES(?, ?)"
         for id, doc in cursor:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
-    def index_exists(self, name: str):
-        "Does an index with the given name exist?"
-        sql = "SELECT COUNT(*) FROM indexes WHERE name=?"
-        cursor = self.cnx.execute(sql, (name,))
+    def index_exists(self, indexname: str):
+        "Does the named index exist?"
+        sql = "SELECT COUNT(*) FROM indexes WHERE indexname=?"
+        cursor = self.cnx.execute(sql, (indexname,))
         return bool(cursor.fetchone()[0])
 
     def get_indexes(self):
         "Return the list names for the current indexes."
-        sql = "SELECT name FROM indexes"
-        return [name for (name,) in self.cnx.execute(sql)]
+        sql = "SELECT indexname FROM indexes"
+        return [indexname for (indexname,) in self.cnx.execute(sql)]
 
-    def get_index(self, name: str) -> dict:
+    def get_index(self, indexname: str) -> dict:
         "Return definition and statistics for the named index."
         try:
-            sql = "SELECT path FROM indexes WHERE name=?"
-            cursor = self.cnx.execute(sql, (name,))
+            sql = "SELECT jsonpath FROM indexes WHERE indexname=?"
+            cursor = self.cnx.execute(sql, (indexname,))
             row = cursor.fetchone()
             if not row:
                 raise ValueError
-            result = {"path": row[0]}
-            cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{name}")
+            result = {"jsonpath": row[0]}
+            cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{indexname}")
             result["count"] = cursor.fetchone()[0]
         except (ValueError, sqlite3.Error):
-            raise KeyError(f"No such index '{name}'.")
+            raise KeyError(f"No such index '{indexname}'.")
         if result["count"] > 0:
-            cursor = self.cnx.execute(f"SELECT MIN(ikey) FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT MIN(key) FROM index_{indexname}")
             result["min"] = cursor.fetchone()[0]
-            cursor = self.cnx.execute(f"SELECT MAX(ikey) FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT MAX(key) FROM index_{indexname}")
             result["max"] = cursor.fetchone()[0]
         return result
 
-    def get_index_keys(self, name: str):
+    def get_index_keys(self, indexname: str):
         "Return a generator to provide all tuples (id, key) in the index."
         try:
-            cursor = self.cnx.execute(f"SELECT id, ikey FROM index_{name}")
+            cursor = self.cnx.execute(f"SELECT id, key FROM index_{indexname}")
             return (row for row in cursor)
         except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
+            raise KeyError(f"No such index '{indexname}'.")
 
-    def in_index(self, name: str, id: str) -> bool:
+    def in_index(self, indexname: str, id: str) -> bool:
         "Is the given id in the named index?"
         try:
-            sql = f"SELECT COUNT(*) FROM index_{name} WHERE id=?"
+            sql = f"SELECT COUNT(*) FROM index_{indexname} WHERE id=?"
             cursor = self.cnx.execute(sql, (id,))
         except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
+            raise KeyError(f"No such index '{indexname}'.")
         return bool(cursor.fetchone()[0])
 
-    def delete_index(self, name: str):
-        """Delete the index with the given name.
+    def delete_index(self, indexname: str):
+        """Delete the named index.
         Raise NotInTransaction if not within a transaction context.
         """
         if not self.in_transaction:
             raise NotInTransactionError
-        if not self.index_exists(name):
-            raise ValueError(f"No index '{name}' exists.")
-        self.cnx.execute("DELETE FROM indexes WHERE name=?", (name,))
-        self.cnx.execute(f"DROP TABLE index_{name}")
-        self._index_cache.pop(name, None)
+        if not self.index_exists(indexname):
+            raise ValueError(f"No index '{indexname}' exists.")
+        self.cnx.execute("DELETE FROM indexes WHERE indexname=?", (indexname,))
+        self.cnx.execute(f"DROP TABLE index_{indexname}")
+        self._index_cache.pop(indexname, None)
 
-    def find(self, name: str, key:str,
+    def find(self, indexname: str, key:str,
              limit: Optional[int]=None,
              offset: Optional[int]=None) -> List[str]:
         """Return a list of all ids for the documents having
         the given key in the named index.
         """
-        sql = f"SELECT docs.id FROM index_{name}, docs" \
-            f" WHERE ikey=? AND docs.id=index_{name}.id"
+        sql = f"SELECT docs.id FROM index_{indexname}, docs" \
+            f" WHERE key=? AND docs.id=index_{indexname}.id"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
@@ -315,16 +315,16 @@ class Database:
         try:
             return [row[0] for row in self.cnx.execute(sql, (key,))]
         except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
+            raise KeyError(f"No such index '{indexname}'.")
 
-    def range(self, name: str, lowkey: str, highkey: str, 
+    def range(self, indexname: str, lowkey: str, highkey: str, 
               limit: Optional[int]=None, offset: Optional[int]=None) -> Any:
         """Return a generator over all ids for the documents having 
         a key in the named index within the given inclusive range.
         """
-        sql = f"SELECT docs.id, docs.doc FROM index_{name}, docs"\
-            f" WHERE ?<=ikey AND ikey<=? AND docs.id=index_{name}.id" \
-            f" ORDER BY index_{name}.ikey"
+        sql = f"SELECT docs.id, docs.doc FROM index_{indexname}, docs"\
+            f" WHERE ?<=key AND key<=? AND docs.id=index_{indexname}.id" \
+            f" ORDER BY index_{indexname}.key"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
@@ -332,13 +332,13 @@ class Database:
         try:
             return (row[0] for row in self.cnx.execute(sql, (lowkey, highkey)))
         except sqlite3.Error:
-            raise KeyError(f"No such index '{name}'.")
+            raise KeyError(f"No such index '{indexname}'.")
 
-    def backup(self, path):
-        "Backup this database in a safe manner into a file given by the path."
-        if os.path.exists(path):
-            raise IOError(f"File '{path}' already exists.")
-        bck = sqlite3.connect(path,
+    def backup(self, dbfilepath):
+        "Backup this database safely into a new file at the given path."
+        if os.path.exists(dbfilepath):
+            raise IOError(f"File '{dbfilepath}' already exists.")
+        bck = sqlite3.connect(dbfilepath,
                               detect_types=sqlite3.PARSE_DECLTYPES)
         with bck:
             self.cnx.backup(bck)
@@ -354,24 +354,24 @@ class Database:
 
     def _add_to_indexes(self, id: str, doc: dict):
         "Add the document with the given id to the indexes."
-        sql = "SELECT name, path FROM indexes"
+        sql = "SELECT indexname, jsonpath FROM indexes"
         cursor = self.cnx.execute(sql)
-        for name, path in cursor:
+        for indexname, jsonpath in cursor:
             try:
-                expression = self._index_cache[name]
+                expression = self._index_cache[indexname]
             except KeyError:
-                expression = pathparse(path)
-                self._index_cache[name] = expression
-            sql = f"INSERT INTO index_{name} (id, ikey) VALUES(?, ?)"
+                expression = jsonpathparse(jsonpath)
+                self._index_cache[indexname] = expression
+            sql = f"INSERT INTO index_{indexname} (id, key) VALUES(?, ?)"
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
     def _remove_from_indexes(self, id: str):
         "Remove the document with the given id from the indexes."
-        sql = "SELECT indexes.name FROM indexes, docs WHERE docs.id=?"
+        sql = "SELECT indexes.indexname FROM indexes, docs WHERE docs.id=?"
         cursor = self.cnx.execute(sql, (id,))
-        for (name,) in cursor:
-            self.cnx.execute(f"DELETE FROM index_{name} WHERE id=?", (id,))
+        for (indexname,) in cursor:
+            self.cnx.execute(f"DELETE FROM index_{indexname} WHERE id=?", (id,))
 
 
 class BaseError(Exception):
@@ -397,34 +397,34 @@ def cli():
     pass
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(writable=True, dir_okay=False))
-def create(dbfile):
-    "Create a YasonDB file at the path DBFILE."
-    if os.path.exists(dbfile):
-        raise click.BadParameter(f"File {dbfile} already exists.")
+@click.argument("dbfilepath", type=click.Path(writable=True, dir_okay=False))
+def create(dbfilepath):
+    "Create a YasonDB database at DBFILEPATH."
+    if os.path.exists(dbfilepath):
+        raise click.BadParameter(f"File {dbfilepath} already exists.")
     try:
-        Database(dbfile, create=True)
+        Database(dbfilepath, create=True)
     except IOError as error:
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(writable=True, dir_okay=False))
-def check(dbfile):
-    "Check that the given file path refers to a YasonDB file."
+@click.argument("dbfilepath", type=click.Path(writable=True, dir_okay=False))
+def check(dbfilepath):
+    "Check that DBFILEPATH refers to a readable YasonDB file."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except (IOError, InvalidDatabaseError) as error:
         raise click.ClickException(error)
     click.echo(str(db))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def dump(dbfile, indent):
-    "Write out all JSON documents from the database."
+def dump(dbfilepath, indent):
+    "Write out all JSON documents from the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     result = {"n_documents": len(db),
@@ -432,24 +432,24 @@ def dump(dbfile, indent):
     click.echo(_json_str(result, indent=indent))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("dumpfile", type=click.File("r"))
 @click.option("--handle",
               type=click.Choice(["add", "check", "update", "skip"]),
               default="add",
               help="Handle conflicts (i.e. id already in database):"
-              " 'add': Add documents, after checking for conflicts."
+              " 'add': Add documents, after checking for no conflicts."
               " 'check': Check for conflicts, do not actually add anything."
               " 'update': Update documents with existing ids, add all others."
               " 'skip': Skip any documents with same id, add all others.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def load(dbfile, dumpfile, handle, indent):
-    """Load the documents (not the indexes) from a dump file, allowing 
-    different handling of conflicts with existing id's in the database.
+def load(dbfilepath, dumpfile, handle, indent):
+    """Load the documents (not the indexes) from a file produced by 'dump',
+    allowing handling of conflicts with existing id's in the database.
     """
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     docs = json.load(dumpfile).get("docs") or {}
@@ -490,30 +490,30 @@ def load(dbfile, dumpfile, handle, indent):
     click.echo(_json_str(result, indent=indent))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("id")
-@click.argument("doc", type=click.File("r"))
-def add(dbfile, id, doc):
-    "Add the given JSON document with the given id into the database."
+@click.argument("docfile", type=click.File("r"))
+def add(dbfilepath, id, docfile):
+    "Add the given JSON document with the given id into the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
         with db:
-            db.add(json.loads(doc.read()), id=id)
+            db.add(json.loads(docfile.read()), id=id)
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("id")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def get(dbfile, id, indent):
-    "Print the JSON document given its id."
+def get(dbfilepath, id, indent):
+    "Print the JSON document given its id in the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         click.ClickException(error)
     try:
@@ -522,30 +522,32 @@ def get(dbfile, id, indent):
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("id")
-@click.argument("doc", type=click.File("r"))
+@click.argument("docfile", type=click.File("r"))
 @click.option("-a", "--add", is_flag=True,
               help="Add the document if the id does not already exist.")
-def update(dbfile, id, doc, add):
-    "Update the given JSON document the given id."
+def update(dbfilepath, id, docfile, add):
+    """Update the given JSON document in the database at DBFILEPATH by
+    the JSON document at DOCFILE.
+    """
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
         with db:
-            db.update(id, json.loads(doc.read()), add=add)
+            db.update(id, json.loads(docfile.read()), add=add)
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("id")
-def delete(dbfile, id):
-    "Delete the JSON document with the given id."
+def delete(dbfilepath, id):
+    "Delete the JSON document given by its id from the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -555,75 +557,77 @@ def delete(dbfile, id):
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("name")
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("indexname")
 @click.option("--keys", is_flag=True, 
               help="List the contents of the named index.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def index(dbfile, name, keys, indent):
-    "Show the index definition and keys."
+def index(dbfilepath, indexname, keys, indent):
+    "Show the index definition and keys in the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
-        doc = db.get_index(name)
+        doc = db.get_index(indexname)
         if keys:
-            doc["keys"] = list(db.get_index_keys(name))
+            doc["keys"] = list(db.get_index_keys(indexname))
         click.echo(_json_str(doc, indent))
     except KeyError as error:
         raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def indexes(dbfile, indent):
-    "List the current indexes."
+def indexes(dbfilepath, indent):
+    "List the current indexes in the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     result = {"indexes": {}}
-    for name in db.get_indexes():
-        result["indexes"][name] = db.get_index(name)
+    for indexname in db.get_indexes():
+        result["indexes"][indexname] = db.get_index(indexname)
     click.echo(_json_str(result, indent))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("name")
-@click.argument("path")
-def index_create(dbfile, name, path):
-    "Create an index with the given name and JSONPath path."
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("indexname")
+@click.argument("jsonpath")
+def index_create(dbfilepath, indexname, jsonpath):
+    """Create an index INDEXNAME with the given JSON path
+    in the database at DBFILEPATH.
+    """
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     with db:
         try:
-            db.create_index(name, path)
+            db.create_index(indexname, jsonpath)
         except (KeyError, ValueError) as error:
             raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("name")
-def index_delete(dbfile, name):
-    "Delete the index with the given name."
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("indexname")
+def index_delete(dbfilepath, indexname):
+    "Delete the index INDEXNAME in the database at DBFILEPATH."
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     with db:
         try:
-            db.delete_index(name)
+            db.delete_index(indexname)
         except KeyError as error:
             raise click.ClickException(error)
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("name")
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("indexname")
 @click.argument("key")
 @click.option("-l", "--limit", default=100,
               help="Limit the number of result items.")
@@ -631,10 +635,12 @@ def index_delete(dbfile, name):
               help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def find(dbfile, name, key, limit, offset, indent):
-    "Find the ids and documents in the given index with the given key."
+def find(dbfilepath, indexname, key, limit, offset, indent):
+    """Print the ids and documents in the index INDEXNAME with the given KEY
+    in the database at DBFILEPATH.
+    """
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -642,18 +648,18 @@ def find(dbfile, name, key, limit, offset, indent):
     except ValueError:
         pass
     try:
-        ids = db.find(name, key, limit=limit, offset=offset)
+        ids = db.find(indexname, key, limit=limit, offset=offset)
     except KeyError as error:
         raise click.ClickException(error)
-    result = {"index": name,
+    result = {"index": indexname,
               "key": key,
               "count": len(ids),
               "docs": dict([(id, db[id]) for id in ids])}
     click.echo(_json_str(result, indent))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("name")
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("indexname")
 @click.argument("lowkey")
 @click.argument("highkey")
 @click.option("-l", "--limit", default=100,
@@ -662,12 +668,12 @@ def find(dbfile, name, key, limit, offset, indent):
               help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def range(dbfile, name, lowkey, highkey, limit, offset, indent):
-    """Find the ids and documents in the given index within
-    the given inclusive range.
+def range(dbfilepath, indexname, lowkey, highkey, limit, offset, indent):
+    """Print the ids and documents in the index INDEXNAME within
+    the given inclusive range in the database at DBFILEPATH.
     """
     try:
-        db = Database(dbfile)
+        db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
@@ -679,10 +685,10 @@ def range(dbfile, name, lowkey, highkey, limit, offset, indent):
     except ValueError:
         pass
     try:
-        ids = list(db.range(name, lowkey, highkey, limit=limit, offset=offset))
+        ids = list(db.range(indexname, lowkey, highkey, limit=limit, offset=offset))
     except KeyError as error:
         raise click.ClickException(error)
-    result = {"index": name,
+    result = {"index": indexname,
               "lowkey": lowkey,
               "highkey": highkey,
               "count": len(ids),
@@ -690,15 +696,13 @@ def range(dbfile, name, lowkey, highkey, limit, offset, indent):
     click.echo(_json_str(result, indent))
 
 @cli.command()
-@click.argument("dbfile", type=click.Path(exists=True, dir_okay=False))
-@click.argument("backupfile", type=click.Path(writable=True, dir_okay=False))
-def backup(dbfile, backupfile):
-    """Backup the current database into a backup file given by the path
-    BACKUPFILE, in a safe manner.
-    """
+@click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("backupfilepath", type=click.Path(writable=True, dir_okay=False))
+def backup(dbfilepath, backupfilepath):
+    "Backup safely the current database into a new file at BACKUPFILEPATH"
     try:
-        db = Database(dbfile)
-        db.backup(backupfile)
+        db = Database(dbfilepath)
+        db.backup(backupfilepath)
     except IOError as error:
         raise click.ClickException(error)
 
