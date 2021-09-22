@@ -38,9 +38,11 @@ class Database:
     def __init__(self, dbfilepath: str, create: bool=False):
         """Connect to the YasonDB database file given by the dbfilepath.
         The special dbfilepath ':memory' indicates an in-memory database.
+
         'create':
           - False: The database file must exist, and must be a YasonDB database.
           - True: Create and initialize the file. It must not exist.
+
         Raises:
         - IOError: The file exists when it shouldn't, and vice versa,
           depending on `create`.
@@ -112,6 +114,7 @@ class Database:
 
     def __delitem__(self, id: str):
         """Delete the document with the given id from the database.
+
         Raises:
         - KeyError: No such document id.
         - YasonDb.NotInTransaction
@@ -153,8 +156,8 @@ class Database:
         self._in_transaction = True
 
     def commit(self):
-        """End the transaction, storing the modifications. Use the context
-        manager instead.
+        """End the transaction, storing the modifications.
+        Use the context manager instead.
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -162,8 +165,8 @@ class Database:
         self._in_transaction = False
 
     def rollback(self):
-        """End the transaction, discaring the modifications. Use the context
-        manager instead.
+        """End the transaction, discaring the modifications.
+        Use the context manager instead.
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -181,9 +184,10 @@ class Database:
         """Add the document to the database.
         If 'id' is not provided, create a UUID4 id.
         Return the id.
+
         Raises:
-        - ValueError if doc is not a dictionary.
-        - KeyError if the id already exists in the database.
+        - ValueError: If doc is not a dictionary.
+        - KeyError: If the id already exists in the database.
         - NotInTransaction
         """
         if not self.in_transaction:
@@ -202,9 +206,10 @@ class Database:
 
     def update(self, id: str, doc: dict, add: bool=False):
         """Update the document with the given id.
+
         Raises:
-        - ValueError if the document is not a dictionary.
-        - KeyError if no such id in the database and 'add' is False.
+        - ValueError: If the document is not a dictionary.
+        - KeyError: If no such id in the database and 'add' is False.
         - NotInTransaction
         """
         if not self.in_transaction:
@@ -223,6 +228,7 @@ class Database:
 
     def delete(self, id: str):
         """Delete the document with the given id from the database.
+
         Raises:
         - KeyError: No such document id.
         - YasonDB.NotInTransaction
@@ -244,7 +250,10 @@ class Database:
 
     def create_index(self, indexname: str, jsonpath: str):
         """Create an index for a given JSON path.
-        Raises NotInTransaction if not within a transaction.
+
+        Raises:
+        - ValueError: If the indexname is invalid or already in use.
+        - NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -279,13 +288,17 @@ class Database:
         return [indexname for (indexname,) in self.cnx.execute(sql)]
 
     def get_index(self, indexname: str) -> dict:
-        "Return definition and statistics for the named index."
+        """Return definition and statistics for the named index.
+
+        Raises:
+        - KeyError: If there is no such index.
+        """
         try:
             sql = "SELECT jsonpath FROM indexes WHERE indexname=?"
             cursor = self.cnx.execute(sql, (indexname,))
             row = cursor.fetchone()
             if not row:
-                raise KeyError
+                raise KeyError(f"No such index '{indexname}'.")
             result = {"jsonpath": row[0]}
             cursor = self.cnx.execute(f"SELECT COUNT(*) FROM index_{indexname}")
             result["count"] = cursor.fetchone()[0]
@@ -299,7 +312,11 @@ class Database:
         return result
 
     def get_index_keys(self, indexname: str):
-        "Return a generator to provide all tuples (id, key) in the index."
+        """Return a generator to provide all tuples (id, key) in the index.
+
+        Raises:
+        - KeyError: If there is no such index.
+        """
         try:
             cursor = self.cnx.execute(f"SELECT id, key FROM index_{indexname}")
             return (row for row in cursor)
@@ -317,12 +334,15 @@ class Database:
 
     def delete_index(self, indexname: str):
         """Delete the named index.
-        Raises NotInTransaction if not within a transaction.
+
+        Raises:
+        - KeyError: If there is no such index.
+        - NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
         if not self.get_index(indexname):
-            raise ValueError(f"No index '{indexname}' exists.")
+            raise ValueError(f"No such index '{indexname}'.")
         self.cnx.execute("DELETE FROM indexes WHERE indexname=?", (indexname,))
         self.cnx.execute(f"DROP TABLE index_{indexname}")
         self._index_cache.pop(indexname, None)
@@ -332,6 +352,9 @@ class Database:
              offset: Optional[int]=None) -> List[str]:
         """Return a list of all ids for the documents having
         the given key in the named index.
+
+        Raises:
+        - KeyError: If there is no such index.
         """
         sql = f"SELECT docs.id FROM index_{indexname}, docs" \
             f" WHERE key=? AND docs.id=index_{indexname}.id"
@@ -348,6 +371,9 @@ class Database:
               limit: Optional[int]=None, offset: Optional[int]=None) -> Any:
         """Return a generator over all ids for the documents having 
         a key in the named index within the given inclusive range.
+
+        Raises:
+        - KeyError: If there is no such index.
         """
         sql = f"SELECT docs.id, docs.doc FROM index_{indexname}, docs"\
             f" WHERE ?<=key AND key<=? AND docs.id=index_{indexname}.id" \
@@ -362,7 +388,11 @@ class Database:
             raise KeyError(f"No such index '{indexname}'.")
 
     def backup(self, dbfilepath):
-        "Backup this database safely into a new file at the given path."
+        """Backup this database safely into a new file at the given path.
+
+        Raises:
+        - IOError: If a file already exists at the new path.
+        """
         if os.path.exists(dbfilepath):
             raise IOError(f"File '{dbfilepath}' already exists.")
         bck = sqlite3.connect(dbfilepath,
@@ -372,7 +402,7 @@ class Database:
         bck.close()
 
     def close(self):
-        "Close the connection."
+        "Close the connection to the Sqlite3 database."
         try:
             self.cnx.close()
             del self.cnx
