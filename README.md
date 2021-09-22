@@ -121,18 +121,18 @@ If an error occurs within the block, the transaction is rolled back.
 Raises:
 - `YasonDB.AlreadyInTransactionError`
 
-## `db.in_transaction`
+### `db.in_transaction`
 
 A property returning whether we are within a transaction.
 
-## `db.begin()`
+### `db.begin()`
 
 Start a transaction. Use the context manager instead.
 
 Raises:
 - `YasonDB.AlreadyInTransactionError`
 
-## `db.commit()`
+### `db.commit()`
 
 End the transaction, storing the modifications. Use the context
 manager instead.
@@ -140,7 +140,7 @@ manager instead.
 Raises:
 - `YasonDb.NotInTransaction`
 
-## `db.rollback()`
+### `db.rollback()`
 
 End the transaction, discaring the modifications. Use the context
 manager instead.
@@ -148,30 +148,30 @@ manager instead.
 Raises:
 - `YasonDb.NotInTransaction`
 
-## `db.get(id, default=None)`
+### `db.get(id, default=None)`
 
 Retrieve the document given its id, else the default.
 
-## `db.add(doc, id=None)`
+### `db.add(doc, id=None)`
 
-Add the document to the database. If 'id' is not provided, create a UUID4 id.
-Return the id.
+Add the document to the database. If `id` is not provided, create a UUID4 id.
+Return the id actually used.
 
 Raises:
 - `ValueError`: If the document is not a dictionary.
 - `KeyError`: If the id already exists in the database.
 - `YasonDB.NotInTransaction`
 
-## `db.update(id, doc, add=False)`
+### `db.update(id, doc, add=False)`
 
 Update the document with the given id.
 
 Raises:
 - `ValueError`: If the document is not a dictionary.
 - `KeyError`: If no such id in the database and 'add' is False.
-- `NotInTransaction`
+- `YasonDB.NotInTransaction`
 
-## `db.delete(id)`
+### `db.delete(id)`
 
 Delete the document with the given id from the database.
 
@@ -179,49 +179,49 @@ Raises:
 - `KeyError`: No such document id.
 - `YasonDB.NotInTransaction`
 
-## `db.index_exists(indexname)
+### `db.index_exists(indexname)
 
 Does the named index exist?
         
-## `db.create_index(indexname, jsonpath)`
+### `db.create_index(indexname, jsonpath)`
 
 Create an index for a given JSON path.
 
 Raises:
 - `ValueError`: If the indexname is invalid or already in use.
-- `NotInTransaction`
+- `YasonDB.NotInTransaction`
 
-## `db.get_indexes()`
+### `db.get_indexes()`
 
 Return the list names for the current indexes.
 
-## `db.get_index(indexname)`
+### `db.get_index(indexname)`
 
 Return definition and statistics for the named index.
 
 Raises:
 - `KeyError`: If there is no such index.
 
-## `db.get_index_keys(indexname)`
+### `db.get_index_keys(indexname)`
 
 Return a generator to provide all tuples (id, key) in the index.
 
 Raises:
 - `KeyError`: If there is no such index.
 
-## `db.in_index(indexname, id)`
+### `db.in_index(indexname, id)`
 
 Is the given id in the named index?
 
-## `db.delete_index(indexname)`
+### `db.delete_index(indexname)`
 
 Delete the named index.
 
 Raises:
 - `KeyError`: If there is no such index.
-- `NotInTransaction`
+- `YasonDB.NotInTransaction`
 
-## `db.find(indexname, key, limit=None, offset=None)`
+### `db.find(indexname, key, limit=None, offset=None)`
 
 Return a list of all ids for the documents having
 the given key in the named index.
@@ -229,7 +229,7 @@ the given key in the named index.
 Raises:
 - `KeyError`: If there is no such index.
 
-## `db.range(indexname, lowkey, highkey, limit=None, offset=None)`
+### `db.range(indexname, lowkey, highkey, limit=None, offset=None)`
 
 Return a generator over all ids for the documents having 
 a key in the named index within the given inclusive range.
@@ -237,30 +237,30 @@ a key in the named index within the given inclusive range.
 Raises:
 - `KeyError`: If there is no such index.
 
-## `db.backup(dbfilepath)`
+### `db.backup(dbfilepath)`
 
 Backup this database safely into a new file at the given path.
 
 Raises:
 - `IOError`: If a file already exists at the new path.
 
-## `db.close()`
+### `db.close()`
 
 Close the connection to the Sqlite3 database.
 
-# `class BaseError(Exception)`
+## `class BaseError(Exception)`
 
 Base class for YasonDB-specific errors.
 
-# `class InvalidDatabaseError(BaseError)`
+## `class InvalidDatabaseError(BaseError)`
 
 The file is not a valid YasonDB database.
 
-# `class AlreadyInTransactionError(BaseError)`
+## `class AlreadyInTransactionError(BaseError)`
 
 Attempt to begin a transaction when already within one.
 
-# `class NotInTransactionError(BaseError)`
+## `class NotInTransactionError(BaseError)`
 
 Attempted operation requires being in a transaction.
 
