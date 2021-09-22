@@ -394,6 +394,8 @@ class Database:
         - IOError: If a file already exists at the new path.
         - YasonDB.InTransactionError
         """
+        if self.in_transaction:
+            raise InTransactionError
         if os.path.exists(dbfilepath):
             raise IOError(f"File '{dbfilepath}' already exists.")
         bck = sqlite3.connect(dbfilepath,
