@@ -28,7 +28,10 @@ with db:
     except KeyError as error:
         print(error)
 
-# Search all documents for those matching a JSON path and return values.
+# Search all documents for those matching a JSON path.
+# Note that this does not test for the value of the JSON path,
+# just that it exists in a document.
+# The id, value and optionally doc are returned for each match.
 
 found = db.search("$.key")
 print(len(found), "documents in search for those with item 'key'.")
