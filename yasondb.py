@@ -151,7 +151,7 @@ class Database:
     def begin(self):
         "Start a transaction. Use the context manager instead."
         if self.in_transaction:
-            raise AlreadyInTransactionError
+            raise InTransactionError
         self.cnx.execute("BEGIN")
         self._in_transaction = True
 
@@ -392,6 +392,7 @@ class Database:
 
         Raises:
         - IOError: If a file already exists at the new path.
+        - YasonDB.InTransactionError
         """
         if os.path.exists(dbfilepath):
             raise IOError(f"File '{dbfilepath}' already exists.")
@@ -439,7 +440,7 @@ class InvalidDatabaseError(BaseError):
     "The file is not a valid YasonDB database."
     pass
 
-class AlreadyInTransactionError(BaseError):
+class InTransactionError(BaseError):
     "Attempt to begin a transaction when already within one."
     pass
 

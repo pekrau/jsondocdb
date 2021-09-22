@@ -204,7 +204,7 @@ Raises:
 
 ### `db.get_index_keys(indexname)`
 
-Return a generator to provide all tuples (id, key) in the index.
+Return a generator to provide all tuples `(id, key)` in the index.
 
 Raises:
 - `KeyError`: If there is no such index.
@@ -243,6 +243,7 @@ Backup this database safely into a new file at the given path.
 
 Raises:
 - `IOError`: If a file already exists at the new path.
+- `YasonDB.InTransactionError`
 
 ### `db.close()`
 
