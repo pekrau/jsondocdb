@@ -180,5 +180,19 @@ class Test(unittest.TestCase):
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
 
+    def test_12_search(self):
+        with self.db:
+            id = self.db.add({"key": 1, "key2": 1, "field": 2})
+            self.db.add({"key": 2, "field": 4})
+            self.db.add({"key": 1, "field": 8901})
+            self.db.add({"key": 3, "key2": 2, "field": 8})
+            self.db.add({"key": 5, "field": 4})
+        result = self.db.search("$.key")
+        self.assertEqual(len(result), 5)
+        result = self.db.search("$.key2")
+        self.assertEqual(len(result), 2)
+        result = self.db.search("$.no_such_key")
+        self.assertEqual(len(result), 0)
+
 if __name__ == "__main__":
     unittest.main()
