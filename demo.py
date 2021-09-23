@@ -28,24 +28,23 @@ with db:
     except KeyError as error:
         print(error)
 
-# Search all documents for those matching a JSON path.
-# Note that this does not test for the value of the JSON path,
-# just that it exists in a document.
-# The id, value and optionally doc are returned for each match.
+# Find all documents having a given value at the given JSON path.
+# Tuples (id, doc) are returned.
+# No transaction is required since nothing is modified.
 
-found = db.search("$.key")
-print(len(found), "documents in search for those with item 'key'.")
+found = db.find("$.key", "k1")
+print(len(found), "documents having the value 'k1' for item 'key'.")
 
-# A named index using JSONPath: documents giving one or more matches
-# with the path will be present in the index.
+# Create a named index using JSONPath: documents giving one or more
+# matches with the path will be present in the index.
 
 with db:
     db.create_index("key_index", "$.key")
     db["in_index"] = {"key": "k3"}
     db["not_in_index"] = {"key2": "k4"}
 
-# 'lookup' returns a list of id's for matching documents from the named index.
-# Note that this operation does not require a transaction.
+# 'lookup' returns a list of ids for matching documents from the named index.
+# No transaction is required since nothing is modified.
 
 found = db.lookup("key_index", "k2")
 if len(found) == 1 and db[found[0]] == doc:
@@ -58,5 +57,4 @@ if not db.in_index("key_index", "k4"):
 # the inclusive interval ["k1", "k2"].
 
 ids = list(db.range("key_index", "k1", "k2"))
-if len(ids) == 2:
-    print("'range' return ids within low and high inclusive.")
+print(f"'range' return {len(ids)} ids within low and high inclusive.")

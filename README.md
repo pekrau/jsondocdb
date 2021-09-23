@@ -18,7 +18,7 @@ with db:
      # Add a document with a specified key.
     db["id1"] = {"key": "k1", "n": 3}
     doc = {"key": "k2", "n": 5}
-    # Add a document, letting jsondblite set a UUID4-based key, which is returned.
+    # Add a document, letting YasonDB set a UUID4-based key, which is returned.
     autoid = db.add(doc)
 
 if db[autoid] == doc:
@@ -32,24 +32,23 @@ with db:
     except KeyError as error:
         print(error)
 
-# Search all documents for those matching a JSON path.
-# Note that this does not test for the value of the JSON path,
-# just that it exists in a document.
-# The id, value and optionally doc are returned for each match.
+# Find all documents having a given value at the given JSON path.
+# Tuples (id, doc) are returned.
+# No transaction is required since nothing is modified.
 
-found = db.search("$.key")
-print(len(found), "documents in search for those with item 'key'.")
+found = db.find("$.key", "k1")
+print(len(found), "documents having the value 'k1' for item 'key'.")
 
-# A named index using JSONPath: documents giving one or more matches
-# with the path will be present in the index.
+# Create a named index using JSONPath: documents giving one or more
+# matches with the path will be present in the index.
 
 with db:
     db.create_index("key_index", "$.key")
     db["in_index"] = {"key": "k3"}
     db["not_in_index"] = {"key2": "k4"}
 
-# 'lookup' returns a list of id's for matching documents from the named index.
-# Note that this operation does not require a transaction.
+# 'lookup' returns a list of ids for matching documents from the named index.
+# No transaction is required since nothing is modified.
 
 found = db.lookup("key_index", "k2")
 if len(found) == 1 and db[found[0]] == doc:
@@ -62,8 +61,7 @@ if not db.in_index("key_index", "k4"):
 # the inclusive interval ["k1", "k2"].
 
 ids = list(db.range("key_index", "k1", "k2"))
-if len(ids) == 2:
-    print("'range' return ids within low and high inclusive.")
+print(f"'range' return {len(ids)} ids within low and high inclusive.")
 ```
 
 ## `class Database(dbfilepath, create=False)`
@@ -187,10 +185,25 @@ Raises:
 - `KeyError`: No such document id.
 - `jsondblite.NotInTransaction`
 
-### `db.search(jsonpath, include_docs=False)`
+### `db.have_jsonpath(jsonpath)`
 
-Search all documents and return those that match the given JSON path.
-The result is a list of dict(key, id[, doc]).
+Return a generator providing ids of all documents matching the given JSON path.
+
+Raises:
+- ValueError: Invalid JSON path.
+
+### `db.lack_jsonpath(jsonpath)`
+
+Return a generator providing ids of all documents not matching
+the given JSON path.
+
+Raises:
+- ValueError: Invalid JSON path.
+
+### `db.find(jsonpath, value)`
+
+Return a list of tuple(id, doc) for all documents that have
+the given value at the given JSON path.
 
 Raises:
 - ValueError: Invalid JSON path.
@@ -219,9 +232,9 @@ Return definition and statistics for the named index.
 Raises:
 - `KeyError`: If there is no such index.
 
-### `db.get_index_keys(indexname)`
+### `db.get_index_values(indexname)`
 
-Return a generator to provide all tuples `(id, key)` in the index.
+Return a generator to provide all tuples `(id, value)` in the index.
 
 Raises:
 - `KeyError`: If there is no such index.
@@ -238,18 +251,18 @@ Raises:
 - `KeyError`: If there is no such index.
 - `jsondblite.NotInTransaction`
 
-### `db.lookup(indexname, key)`
+### `db.lookup(indexname, value)`
 
 Return a list of all ids for the documents having
-the given key in the named index.
+the given value in the named index.
 
 Raises:
 - `KeyError`: If there is no such index.
 
-### `db.range(indexname, lowkey, highkey, limit=None, offset=None)`
+### `db.range(indexname, low, high, limit=None, offset=None)`
 
 Return a generator over all ids for the documents having 
-a key in the named index within the given inclusive range.
+a value in the named index within the given inclusive range.
 
 - `limit`: Limit the number of ids returned.
 - `offset`: Skip the first number of ids found.

@@ -236,9 +236,37 @@ class Database:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
-    def search(self, jsonpath, include_docs=False):
-        """Search all documents and return those that match the given JSON path.
-        The result is a list of dict(key, id[, doc]).
+    def have_jsonpath(self, jsonpath):
+        """Return a generator providing ids of all documents
+        matching the given JSON path.
+
+        Raises:
+        - ValueError: Invalid JSON path.
+        """
+        try:
+            expression = jsonpathparse(jsonpath)
+        except JSONPathError as error:
+            raise ValueError(f"Invalid JSON path: {error}")
+        cursor = self.cnx.execute("SELECT id, doc FROM docs")
+        return (id for id, doc in cursor if expression.find(doc))
+
+    def lack_jsonpath(self, jsonpath):
+        """Return a generator providing ids of all documents 
+        not matching the given JSON path.
+
+        Raises:
+        - ValueError: Invalid JSON path.
+        """
+        try:
+            expression = jsonpathparse(jsonpath)
+        except JSONPathError as error:
+            raise ValueError(f"Invalid JSON path: {error}")
+        cursor = self.cnx.execute("SELECT id, doc FROM docs")
+        return (id for id, doc in cursor if not expression.find(doc))
+
+    def find(self, jsonpath, value):
+        """Return a list of tuple(id, doc) for all documents that have
+        the given value at the given SON path.
 
         Raises:
         - ValueError: Invalid JSON path.
@@ -248,13 +276,12 @@ class Database:
         except JSONPathError as error:
             raise ValueError(f"Invalid JSON path: {error}")
         result = []
-        sql = "SELECT id, doc FROM docs"
-        cursor = self.cnx.execute(sql)
+        cursor = self.cnx.execute("SELECT id, doc FROM docs")
         for id, doc in cursor:
             for match in expression.find(doc):
-                result.append({"key": match.value, "id": id})
-                if include_docs:
-                    result[-1]["doc"] = doc
+                if match.value == value:
+                    result.append((id, doc))
+                    break
         return result
 
     def index_exists(self, indexname: str) -> bool:
@@ -287,15 +314,15 @@ class Database:
             sql = "INSERT INTO indexes (indexname, jsonpath) VALUES (?, ?)"
             self.cnx.execute(sql, (indexname, jsonpath))
             sql = f"CREATE TABLE index_{indexname}" \
-                " (id TEXT PRIMARY KEY, key NOT NULL)"
+                " (id TEXT PRIMARY KEY, value NOT NULL)"
             self.cnx.execute(sql)
-            sql = f"CREATE INDEX index_{indexname}_ix ON index_{indexname} (key)"
+            sql = f"CREATE INDEX index_{indexname}_ix ON index_{indexname} (value)"
         except sqlite3.Error as error:
             raise ValueError(f"Could not create index '{indexname}': {error}")
         self._index_cache[indexname] = expression
         sql = "SELECT id, doc FROM docs"
         cursor = self.cnx.execute(sql)
-        sql = f"INSERT INTO index_{indexname} (id, key) VALUES(?, ?)"
+        sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
         for id, doc in cursor:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
@@ -323,23 +350,24 @@ class Database:
         except (ValueError, sqlite3.Error):
             raise KeyError(f"No such index '{indexname}'.")
         if result["count"] > 0:
-            cursor = self.cnx.execute(f"SELECT MIN(key) FROM index_{indexname}")
+            cursor = self.cnx.execute(f"SELECT MIN(value) FROM index_{indexname}")
             result["min"] = cursor.fetchone()[0]
-            cursor = self.cnx.execute(f"SELECT MAX(key) FROM index_{indexname}")
+            cursor = self.cnx.execute(f"SELECT MAX(value) FROM index_{indexname}")
             result["max"] = cursor.fetchone()[0]
         return result
 
-    def get_index_keys(self, indexname: str):
-        """Return a generator to provide all tuples (id, key) in the index.
+    def get_index_values(self, indexname: str):
+        """Return a generator to provide all tuples (id, value) in the index.
 
         Raises:
         - KeyError: If there is no such index.
         """
         try:
-            cursor = self.cnx.execute(f"SELECT id, key FROM index_{indexname}")
-            return (row for row in cursor)
+            sql = f"SELECT id, value FROM index_{indexname}"
+            cursor = self.cnx.execute(sql)
         except sqlite3.Error:
             raise KeyError(f"No such index '{indexname}'.")
+        return (row for row in cursor)
 
     def in_index(self, indexname: str, id: str) -> bool:
         "Is the given id in the named index?"
@@ -365,37 +393,37 @@ class Database:
         self.cnx.execute(f"DROP TABLE index_{indexname}")
         self._index_cache.pop(indexname, None)
 
-    def lookup(self, indexname: str, key:str):
+    def lookup(self, indexname: str, value:str):
         """Return a list of all ids for the documents having
-        the given key in the named index.
+        the given value in the named index.
 
         Raises:
         - KeyError: If there is no such index.
         """
         sql = f"SELECT docs.id FROM index_{indexname}, docs" \
-            f" WHERE key=? AND docs.id=index_{indexname}.id"
+            f" WHERE value=? AND docs.id=index_{indexname}.id"
         try:
-            return [row[0] for row in self.cnx.execute(sql, (key,))]
+            return [row[0] for row in self.cnx.execute(sql, (value,))]
         except sqlite3.Error:
             raise KeyError(f"No such index '{indexname}'.")
 
-    def range(self, indexname: str, lowkey: str, highkey: str, 
+    def range(self, indexname: str, low: str, high: str, 
               limit: Optional[int]=None, offset: Optional[int]=None) -> Any:
         """Return a generator over all ids for the documents having 
-        a key in the named index within the given inclusive range.
+        a value in the named index within the given inclusive range.
 
         Raises:
         - KeyError: If there is no such index.
         """
         sql = f"SELECT docs.id, docs.doc FROM index_{indexname}, docs"\
-            f" WHERE ?<=key AND key<=? AND docs.id=index_{indexname}.id" \
-            f" ORDER BY index_{indexname}.key"
+            f" WHERE ?<=value AND value<=? AND docs.id=index_{indexname}.id" \
+            f" ORDER BY index_{indexname}.value"
         if limit is not None:
             sql += f" LIMIT {limit}"
         if offset is not None:
             sql += f" OFFSET {offset}"
         try:
-            return (row[0] for row in self.cnx.execute(sql, (lowkey, highkey)))
+            return (row[0] for row in self.cnx.execute(sql, (low, high)))
         except sqlite3.Error:
             raise KeyError(f"No such index '{indexname}'.")
 
@@ -434,7 +462,7 @@ class Database:
             except KeyError:
                 expression = jsonpathparse(jsonpath)
                 self._index_cache[indexname] = expression
-            sql = f"INSERT INTO index_{indexname} (id, key) VALUES(?, ?)"
+            sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
@@ -634,7 +662,7 @@ def delete(dbfilepath, id):
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def search(dbfilepath, jsonpath, indent):
-    "Print the keys, ids and documents matching the given JSONPATH."
+    "Print ids and documents matching the given JSONPATH."
     try:
         db = Database(dbfilepath)
     except IOError as error:
@@ -661,7 +689,7 @@ def index(dbfilepath, indexname, keys, indent):
     try:
         doc = db.get_index(indexname)
         if keys:
-            doc["keys"] = list(db.get_index_keys(indexname))
+            doc["values"] = list(db.get_index_values(indexname))
         click.echo(_json_str(doc, indent))
     except KeyError as error:
         raise click.ClickException(error)
@@ -717,11 +745,11 @@ def index_delete(dbfilepath, indexname):
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("indexname")
-@click.argument("key")
+@click.argument("value")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def lookup(dbfilepath, indexname, key, indent):
-    """Print the ids and documents in the index INDEXNAME with the given KEY
+def lookup(dbfilepath, indexname, value, indent):
+    """Print the ids and documents in the index INDEXNAME with the given VALUE
     in the database at DBFILEPATH.
     """
     try:
@@ -729,15 +757,15 @@ def lookup(dbfilepath, indexname, key, indent):
     except IOError as error:
         raise click.ClickException(error)
     try:
-        key = int(key)
+        value = int(value)
     except ValueError:
         pass
     try:
-        ids = db.lookup(indexname, key)
-    except KeyError as error:
+        ids = db.lookup(indexname, value)
+    except ValueError as error:
         raise click.ClickException(error)
     result = {"index": indexname,
-              "key": key,
+              "value": value,
               "count": len(ids),
               "docs": dict([(id, db[id]) for id in ids])}
     click.echo(_json_str(result, indent))
@@ -745,15 +773,15 @@ def lookup(dbfilepath, indexname, key, indent):
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("indexname")
-@click.argument("lowkey")
-@click.argument("highkey")
+@click.argument("low")
+@click.argument("high")
 @click.option("-l", "--limit", default=100,
               help="Limit the number of result items.")
 @click.option("-o", "--offset", default=None, type=int,
               help="Offset of the list of returned items.")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def range(dbfilepath, indexname, lowkey, highkey, limit, offset, indent):
+def range(dbfilepath, indexname, low, high, limit, offset, indent):
     """Print the ids and documents in the index INDEXNAME within
     the given inclusive range in the database at DBFILEPATH.
     """
@@ -762,20 +790,20 @@ def range(dbfilepath, indexname, lowkey, highkey, limit, offset, indent):
     except IOError as error:
         raise click.ClickException(error)
     try:
-        lowkey = int(lowkey)
+        low = int(low)
     except ValueError:
         pass
     try:
-        highkey = int(highkey)
+        high = int(high)
     except ValueError:
         pass
     try:
-        ids = list(db.range(indexname, lowkey, highkey, limit=limit, offset=offset))
+        ids = list(db.range(indexname, low, high, limit=limit, offset=offset))
     except KeyError as error:
         raise click.ClickException(error)
     result = {"index": indexname,
-              "lowkey": lowkey,
-              "highkey": highkey,
+              "low": low,
+              "high": high,
               "count": len(ids),
               "docs": dict([(id, db[id]) for id in ids])}
     click.echo(_json_str(result, indent))
