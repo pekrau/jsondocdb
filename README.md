@@ -36,7 +36,7 @@ with db:
 # Tuples (id, doc) are returned.
 # No transaction is required since nothing is modified.
 
-found = db.find("$.key", "k1")
+found = db.search("$.key", "k1")
 print(len(found), "documents having the value 'k1' for item 'key'.")
 
 # Create a named index using JSONPath: documents giving one or more
@@ -200,7 +200,7 @@ the given JSON path.
 Raises:
 - ValueError: Invalid JSON path.
 
-### `db.find(jsonpath, value)`
+### `db.search(jsonpath, value)`
 
 Return a list of tuple(id, doc) for all documents that have
 the given value at the given JSON path.

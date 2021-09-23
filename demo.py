@@ -32,7 +32,7 @@ with db:
 # Tuples (id, doc) are returned.
 # No transaction is required since nothing is modified.
 
-found = db.find("$.key", "k1")
+found = db.search("$.key", "k1")
 print(len(found), "documents having the value 'k1' for item 'key'.")
 
 # Create a named index using JSONPath: documents giving one or more

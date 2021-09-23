@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -264,9 +264,9 @@ class Database:
         cursor = self.cnx.execute("SELECT id, doc FROM docs")
         return (id for id, doc in cursor if not expression.find(doc))
 
-    def find(self, jsonpath, value):
+    def search(self, jsonpath, value):
         """Return a list of tuple(id, doc) for all documents that have
-        the given value at the given SON path.
+        the given value at the given JSON path.
 
         Raises:
         - ValueError: Invalid JSON path.
@@ -659,16 +659,23 @@ def delete(dbfilepath, id):
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("jsonpath")
+@click.argument("value")
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
-def search(dbfilepath, jsonpath, indent):
-    "Print ids and documents matching the given JSONPATH."
+def search(dbfilepath, jsonpath, value, indent):
+    """Print a list of tuple(id, doc) for all documents that have
+    the given VALUE at the given JSONPATH.
+    """
     try:
         db = Database(dbfilepath)
     except IOError as error:
         raise click.ClickException(error)
     try:
-        result = db.search(jsonpath, include_docs=True)
+        value = int(value)
+    except ValueError:
+        pass
+    try:
+        result = db.search(jsonpath, value)
     except KeyError as error:
         raise click.ClickException(error)
     click.echo(_json_str(result, indent))
@@ -749,8 +756,8 @@ def index_delete(dbfilepath, indexname):
 @click.option("-I", "--indent", default=2,
               help="Pretty-print the resulting JSON document.")
 def lookup(dbfilepath, indexname, value, indent):
-    """Print the ids and documents in the index INDEXNAME with the given VALUE
-    in the database at DBFILEPATH.
+    """Print the ids and documents in the index INDEXNAME
+    with the given VALUE in the database at DBFILEPATH.
     """
     try:
         db = Database(dbfilepath)

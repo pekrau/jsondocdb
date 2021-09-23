@@ -146,7 +146,19 @@ class Test(unittest.TestCase):
         self.assertTrue("count" in indexdef)
         self.assertEqual(indexdef["count"], 5)
 
-    def test_06_lookup(self):
+    def test_06_search(self):
+        for number in range(5):
+            doc = {"key": f"id{number}"}
+            with Docfile(doc) as docfile:
+                p = self.execute("add", f"docid{number}", str(docfile))
+            self.assertEqual(p.returncode, 0)
+        p = self.execute("search", "$.key", "id3")
+        self.assertEqual(p.returncode, 0)
+        result = json.loads(p.stdout)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[1], {"key": "id3"})
+
+    def test_07_lookup(self):
         p = self.execute("index-create", "ix", "$.key")
         self.assertEqual(p.returncode, 0)
         for number in range(5):
@@ -174,7 +186,7 @@ class Test(unittest.TestCase):
         self.assertEqual(list(result["docs"].keys()), ["docid3"])
         self.assertTrue(result["docs"]["docid3"]["key"], "id3")
 
-    def test_07_range(self):
+    def test_08_range(self):
         p = self.execute("index-create", "ix", "$.key")
         self.assertEqual(p.returncode, 0)
         for number in range(5):

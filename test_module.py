@@ -94,7 +94,35 @@ class Test(unittest.TestCase):
         self.assertEqual(len(ids), MANY)
         self.assertEqual(min(ids), min(created))
 
-    def test_07_create_index(self):
+    def test_07_have_jsonpath(self):
+        with self.db:
+            self.db.add({"key": "value"})
+            self.db.add({"key2": 2})
+            self.db.add({"key": "another value", "key2": 5})
+        result = self.db.have_jsonpath("$.key")
+        self.assertEqual(len(list(result)), 2)
+        result = self.db.have_jsonpath("$.key2")
+        self.assertEqual(len(list(result)), 2)
+        result = self.db.have_jsonpath("$.key3")
+        self.assertEqual(len(list(result)), 0)
+        result = self.db.lack_jsonpath("$.key2")
+        self.assertEqual(len(list(result)), 1)
+
+    def test_08_search(self):
+        with self.db:
+            id = self.db.add({"key": 1, "key2": 1, "field": 2})
+            self.db.add({"key": 2, "field": 4})
+            self.db.add({"key": 1, "field": 8901})
+            self.db.add({"key": 3, "key2": 2, "field": 8})
+            self.db.add({"key": 5, "field": 4})
+        result = self.db.search("$.key", 1)
+        self.assertEqual(len(result), 2)
+        result = self.db.search("$.key2", 1)
+        self.assertEqual(len(result), 1)
+        result = self.db.search("$.no_such_key", 1)
+        self.assertEqual(len(result), 0)
+
+    def test_09_create_index(self):
         with self.db:
             self.assertFalse(self.db.index_exists("key_index"))
             self.db.create_index("key_index", "$.key")
@@ -107,7 +135,7 @@ class Test(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.db.get_index("no_such_index")
 
-    def test_08_exercise_index(self):
+    def test_10_exercise_index(self):
         with self.db:
             id1 = "id1"
             self.db[id1] = {"key": "akey", "field": 2}
@@ -122,7 +150,7 @@ class Test(unittest.TestCase):
             self.assertTrue(self.db.index_exists(index_name))
             self.assertEqual(self.db.get_index(index_name)["count"], 2)
 
-    def test_09_several_indexes(self):
+    def test_11_several_indexes(self):
         with self.db:
             id = self.db.add({"key": "akey", "id": "id1", "field": 2})
             self.db.add({"key": "anotherkey", "id": "id2", "field": 4})
@@ -143,7 +171,7 @@ class Test(unittest.TestCase):
         self.assertEqual(self.db.get_index(index_name1)["count"], 4)
         self.assertEqual(self.db.get_index(index_name2)["count"], 2)
 
-    def test_10_lookup(self):
+    def test_12_lookup(self):
         with self.db:
             doc = {"key": "akey", "key2": 1, "field": 2}
             id = self.db.add(doc)
@@ -165,7 +193,7 @@ class Test(unittest.TestCase):
         result = self.db.lookup(index_name2, 4)
         self.assertTrue(len(result), 2)
 
-    def test_11_range(self):
+    def test_13_range(self):
         with self.db:
             id = self.db.add({"key": 1, "key2": 1, "field": 2})
             self.db.add({"key": 2, "field": 4})
@@ -179,20 +207,6 @@ class Test(unittest.TestCase):
         self.assertEqual(self.db[result[-1]]["key"], 3)
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
-
-    def test_12_search(self):
-        with self.db:
-            id = self.db.add({"key": 1, "key2": 1, "field": 2})
-            self.db.add({"key": 2, "field": 4})
-            self.db.add({"key": 1, "field": 8901})
-            self.db.add({"key": 3, "key2": 2, "field": 8})
-            self.db.add({"key": 5, "field": 4})
-        result = self.db.search("$.key")
-        self.assertEqual(len(result), 5)
-        result = self.db.search("$.key2")
-        self.assertEqual(len(result), 2)
-        result = self.db.search("$.no_such_key")
-        self.assertEqual(len(result), 0)
 
 if __name__ == "__main__":
     unittest.main()
