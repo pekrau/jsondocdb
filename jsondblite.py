@@ -1,5 +1,5 @@
-"""Yet another JSON document database, with indexes and transactions.
-Python using Sqlite3 and JSONPath.
+"""JSON document database, with indexes and transactions.
+Built on Sqlite3 and JSONPath in Python.
 """
 
 import json
@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -33,21 +33,21 @@ def _json_str(doc, indent):
 
 
 class Database:
-    "Yet another JSON document database, with indexes and transactions."
+    "JSON document database, with indexes and transactions."
 
     def __init__(self, dbfilepath: str, create: bool=False):
-        """Connect to the YasonDB database file given by the dbfilepath.
+        """Connect to the jsondblite database file given by the dbfilepath.
         The special dbfilepath ':memory' indicates an in-memory database.
 
         'create':
-          - False: The database file must exist, and must be a YasonDB database.
+          - False: The database file must exist, and must be a jsondblite database.
           - True: Create and initialize the file. It must not exist.
 
         Raises:
         - IOError: The file exists when it shouldn't, and vice versa,
           depending on `create`.
-        - ValueError: Could not initialize the YasonDB database.
-        - YasonDB.InvalidDatabaseError: The database file is not a YasonDB file.
+        - ValueError: Could not initialize the jsondblite database.
+        - YasonDB.InvalidDatabaseError: The file is not a jsondblite file.
         """
         if create:
             if os.path.exists(dbfilepath):
@@ -61,7 +61,7 @@ class Database:
                                  " (indexname TEXT PRIMARY KEY,"
                                  "  jsonpath TEXT NOT NULL)")
             except sqlite3.Error:
-                raise ValueError("Could not initialize the YasonDB database.")
+                raise ValueError("Could not initialize the jsondblite database.")
         else:
             if not os.path.exists(dbfilepath):
                 raise IOError(f"File '{dbfilepath}' does not exist.")
@@ -70,7 +70,7 @@ class Database:
                 self.cnx.execute("SELECT COUNT(*) FROM docs")
                 self.cnx.execute("SELECT COUNT(*) FROM indexes")
             except sqlite3.Error:
-                raise InvalidDatabaseError("The database file is not a YasonDB file.")
+                raise InvalidDatabaseError("The database file is not a jsondblite file.")
         self._index_cache = {}  # key: jsonpath; value: parsed jsonpath
 
     def _connect(self, dbfilepath: str) -> Any:
@@ -227,7 +227,7 @@ class Database:
 
         Raises:
         - KeyError: No such document id.
-        - YasonDB.NotInTransaction
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -404,7 +404,7 @@ class Database:
 
         Raises:
         - IOError: If a file already exists at the new path.
-        - YasonDB.InTransactionError
+        - jsondblite.InTransactionError
         """
         if self.in_transaction:
             raise InTransactionError
@@ -447,11 +447,11 @@ class Database:
 
 
 class BaseError(Exception):
-    "Base class for YasonDB-specific errors."
+    "Base class for jsondblite-specific errors."
     pass
 
 class InvalidDatabaseError(BaseError):
-    "The file is not a valid YasonDB database."
+    "The file is not a valid jsondblite database."
     pass
 
 class InTransactionError(BaseError):
@@ -465,13 +465,13 @@ class NotInTransactionError(BaseError):
 
 @click.group()
 def cli():
-    "YasonDB command-line interface."
+    "jsondblite command-line interface."
     pass
 
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(writable=True, dir_okay=False))
 def create(dbfilepath):
-    "Create a YasonDB database at DBFILEPATH."
+    "Create a jsondblite database at DBFILEPATH."
     if os.path.exists(dbfilepath):
         raise click.BadParameter(f"File {dbfilepath} already exists.")
     try:
@@ -482,7 +482,7 @@ def create(dbfilepath):
 @cli.command()
 @click.argument("dbfilepath", type=click.Path(writable=True, dir_okay=False))
 def check(dbfilepath):
-    "Check that DBFILEPATH refers to a readable YasonDB file."
+    "Check that DBFILEPATH refers to a readable jsondblite file."
     try:
         db = Database(dbfilepath)
     except (IOError, InvalidDatabaseError) as error:

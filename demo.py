@@ -1,11 +1,11 @@
 "Demo code for the README."
 
-import yasondb
+import jsondblite
 
 # To create a new file use 'create=True'.
 # To use an existing file, 'create=False', which is the default
 
-db = yasondb.Database("demo.db", create=True)
+db = jsondblite.Database("demo.db", create=True)
 
 # Database modifications must be done within a transaction,
 # which are created using a 'with' context manager.

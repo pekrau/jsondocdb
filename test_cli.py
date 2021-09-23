@@ -1,11 +1,11 @@
-"Test the YasonDB CLI."
+"Test the jsondblite CLI."
 
 import json
 import os
 import subprocess
 import unittest
 
-import yasondb
+import jsondblite
 
 class Docfile:
     "Temporary file for JSON document."
@@ -36,12 +36,12 @@ class Docfile:
 
 
 class Test(unittest.TestCase):
-    "Test the YasonDB CLI."
+    "Test the jsondblite CLI."
 
-    DBFILEPATH = "/tmp/test.yasondb"
+    DBFILEPATH = "/tmp/test.jsondblite"
 
     def execute(self, command, *args):
-        return subprocess.run(["python", "yasondb.py"] +
+        return subprocess.run(["python", "jsondblite.py"] +
                               [command, self.DBFILEPATH] +
                               list(args),
                               capture_output=True,

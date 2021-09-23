@@ -1,22 +1,22 @@
-"Test the YasonDB module."
+"Test the jsondblite module."
 
 import os
 import unittest
 
-import yasondb
+import jsondblite
 
 
 class Test(unittest.TestCase):
-    "Test the YasonDB module."
+    "Test the jsondblite module."
 
-    DBFILEPATH = "/tmp/test.yasondb"
+    DBFILEPATH = "/tmp/test.jsondblite"
 
     def setUp(self):
         try:
             os.remove(self.DBFILEPATH)
         except IOError:
             pass
-        self.db = yasondb.Database(self.DBFILEPATH, create=True)
+        self.db = jsondblite.Database(self.DBFILEPATH, create=True)
 
     def tearDown(self):
         try:
@@ -29,15 +29,15 @@ class Test(unittest.TestCase):
 
     def test_01_create_twice(self):
         with self.assertRaises(IOError):
-            db2 = yasondb.Database(self.DBFILEPATH, create=True)
+            db2 = jsondblite.Database(self.DBFILEPATH, create=True)
 
     def test_02_open_existing(self):
         self.db.close()
-        db2 = yasondb.Database(self.DBFILEPATH)
+        db2 = jsondblite.Database(self.DBFILEPATH)
 
     def test_03_open_bad_file(self):
-        with self.assertRaises(yasondb.InvalidDatabaseError):
-            db = yasondb.Database(yasondb.__file__)
+        with self.assertRaises(jsondblite.InvalidDatabaseError):
+            db = jsondblite.Database(jsondblite.__file__)
 
     def test_04_add_delete_document(self):
         with self.db:

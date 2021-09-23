@@ -1,15 +1,15 @@
-# YasonDB
+# jsondblite
 
-Yet another JSON document database, with indexes and transactions.
+JSON document database, with indexes and transactions.
 Built on Sqlite3 and JSONPath in Python.
 
 ```python
-import yasondb
+import jsondblite
 
 # To create a new file use 'create=True'.
 # To use an existing file, 'create=False', which is the default
 
-db = yasondb.Database("demo.db", create=True)
+db = jsondblite.Database("demo.db", create=True)
 
 # Database modifications must be done within a transaction,
 # which are created using a 'with' context manager.
@@ -18,7 +18,7 @@ with db:
      # Add a document with a specified key.
     db["id1"] = {"key": "k1", "n": 3}
     doc = {"key": "k2", "n": 5}
-    # Add a document, letting YasonDB set a UUID4-based key, which is returned.
+    # Add a document, letting jsondblite set a UUID4-based key, which is returned.
     autoid = db.add(doc)
 
 if db[autoid] == doc:
@@ -68,17 +68,17 @@ if len(ids) == 2:
 
 ## `class Database(dbfilepath, create=False)`
 
-- `dbfilepath`: The filepath for the YasonDB database file.
+- `dbfilepath`: The filepath for the jsondblite database file.
   The special value `:memory:` indicates an in-memory database.
 - `create`:
-  - `False`: The database file must exist, and must be a YasonDB database.
+  - `False`: The database file must exist, and must be a jsondblite database.
   - `True`: Create and initialize the file. It must not exist.
 
 Raises:
 - `IOError`: The file exists when it shouldn't, and vice versa,
   depending on `create`.
-- `ValueError`: Could not initialize the YasonDB database.
-- `YasonDB.InvalidDatabaseError`: The database file is not a YasonDB file.
+- `ValueError`: Could not initialize the jsondblite database.
+- `jsondblite.InvalidDatabaseError`: The file is not a jsondblite file.
 
 ### `str(db)`
 
@@ -127,7 +127,7 @@ If all goes well, the transaction is committed.
 If an error occurs within the block, the transaction is rolled back.
 
 Raises:
-- `YasonDB.AlreadyInTransactionError`
+- `jsondblite.AlreadyInTransactionError`
 
 ### `db.in_transaction`
 
@@ -138,7 +138,7 @@ A property returning whether we are within a transaction.
 Start a transaction. Use the context manager instead.
 
 Raises:
-- `YasonDB.AlreadyInTransactionError`
+- `jsondblite.AlreadyInTransactionError`
 
 ### `db.commit()`
 
@@ -168,7 +168,7 @@ Return the id actually used.
 Raises:
 - `ValueError`: If the document is not a dictionary.
 - `KeyError`: If the id already exists in the database.
-- `YasonDB.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.update(id, doc, add=False)`
 
@@ -177,7 +177,7 @@ Update the document with the given id.
 Raises:
 - `ValueError`: If the document is not a dictionary.
 - `KeyError`: If no such id in the database and 'add' is False.
-- `YasonDB.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.delete(id)`
 
@@ -185,7 +185,7 @@ Delete the document with the given id from the database.
 
 Raises:
 - `KeyError`: No such document id.
-- `YasonDB.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.search(jsonpath, include_docs=False)`
 
@@ -206,7 +206,7 @@ Create an index for a given JSON path.
 Raises:
 - `ValueError`: The indexname is invalid or already in use, or the given
   JSON path is invalid.
-- `YasonDB.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.get_indexes()`
 
@@ -236,7 +236,7 @@ Delete the named index.
 
 Raises:
 - `KeyError`: If there is no such index.
-- `YasonDB.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.lookup(indexname, key)`
 
@@ -263,7 +263,7 @@ Backup this database safely into a new file at the given path.
 
 Raises:
 - `IOError`: If a file already exists at the new path.
-- `YasonDB.InTransactionError`
+- `jsondblite.InTransactionError`
 
 ### `db.close()`
 
@@ -271,11 +271,11 @@ Close the connection to the Sqlite3 database.
 
 ## `class BaseError(Exception)`
 
-Base class for YasonDB-specific errors.
+Base class for jsondblite-specific errors.
 
 ## `class InvalidDatabaseError(BaseError)`
 
-The file is not a valid YasonDB database.
+The file is not a valid jsondblite database.
 
 ## `class AlreadyInTransactionError(BaseError)`
 
