@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.7.3"
+__version__ = "0.7.4"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -406,7 +406,7 @@ class Database:
         - KeyError: If there is no such index.
         """
         sql = f"SELECT docs.id FROM index_{indexname}, docs" \
-            f" WHERE value=? AND docs.id=index_{indexname}.id"
+            f" WHERE index_{indexname}.value=? AND docs.id=index_{indexname}.id"
         try:
             return [row[0] for row in self.cnx.execute(sql, (value,))]
         except sqlite3.Error:
