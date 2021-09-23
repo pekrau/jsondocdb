@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -47,7 +47,7 @@ class Database:
         - IOError: The file exists when it shouldn't, and vice versa,
           depending on `create`.
         - ValueError: Could not initialize the jsondblite database.
-        - YasonDB.InvalidDatabaseError: The file is not a jsondblite file.
+        - jsondblite.InvalidDatabaseError: The file is not a jsondblite file.
         """
         if create:
             if os.path.exists(dbfilepath):
@@ -98,8 +98,9 @@ class Database:
 
     def __getitem__(self, id) -> dict:
         """Return the document with the given id.
+
         Raises:
-        - YasonDb.NotInTransaction
+        - jsondblite.NotInTransaction
         """
         cursor = self.cnx.execute("SELECT doc FROM docs WHERE id=?", (id,))
         row = cursor.fetchone()
@@ -109,14 +110,14 @@ class Database:
 
     def __setitem__(self, id: str, doc: dict):
         "Add or update the document in the database with the given id."
-        self.update(id, doc, add=True)
+        self.update(id, doc)
 
     def __delitem__(self, id: str):
         """Delete the document with the given id from the database.
 
         Raises:
         - KeyError: No such document id.
-        - YasonDb.NotInTransaction
+        - jsondblite.NotInTransaction
         """
         self.delete(id)
 
@@ -156,6 +157,9 @@ class Database:
     def commit(self):
         """End the transaction, storing the modifications.
         Use the context manager instead.
+
+        Raises:
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -164,6 +168,9 @@ class Database:
     def rollback(self):
         """End the transaction, discaring the modifications.
         Use the context manager instead.
+
+        Raises:
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -178,13 +185,13 @@ class Database:
 
     def add(self, doc: dict, id: Optional[str]=None) -> str:
         """Add the document to the database.
-        If 'id' is not provided, create a UUID4 id.
+        If id is not provided, create a UUID4 id.
         Return the id.
 
         Raises:
         - ValueError: If doc is not a dictionary.
         - KeyError: If the id already exists in the database.
-        - NotInTransaction
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -200,13 +207,13 @@ class Database:
         self._add_to_indexes(id, doc)
         return id
 
-    def update(self, id: str, doc: dict, add: bool=False):
+    def update(self, id: str, doc: dict):
         """Update the document with the given id.
+        If the id is not in the database, then add the doc.
 
         Raises:
         - ValueError: If the document is not a dictionary.
-        - KeyError: If no such id in the database and 'add' is False.
-        - NotInTransaction
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -217,10 +224,8 @@ class Database:
         if cursor.rowcount == 1: # Actually updated.
             self._remove_from_indexes(id)
             self._add_to_indexes(id, doc)
-        elif add:
+        else:                   # Actually add.
             self.add(doc, id=id)
-        else:
-            raise KeyError(f"No such document '{id}' to update.")
 
     def delete(self, id: str):
         """Delete the document with the given id from the database.
@@ -298,7 +303,7 @@ class Database:
         Raises:
         - ValueError: The indexname is invalid or already in use, or
           the given JSON path is invalid.
-        - NotInTransaction
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -383,7 +388,7 @@ class Database:
 
         Raises:
         - KeyError: If there is no such index.
-        - NotInTransaction
+        - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
@@ -625,9 +630,7 @@ def get(dbfilepath, id, indent):
 @click.argument("dbfilepath", type=click.Path(exists=True, dir_okay=False))
 @click.argument("id")
 @click.argument("docfile", type=click.File("r"))
-@click.option("-a", "--add", is_flag=True,
-              help="Add the document if the id does not already exist.")
-def update(dbfilepath, id, docfile, add):
+def update(dbfilepath, id, docfile):
     """Update the given JSON document in the database at DBFILEPATH by
     the JSON document at DOCFILE.
     """
@@ -637,7 +640,7 @@ def update(dbfilepath, id, docfile, add):
         raise click.ClickException(error)
     try:
         with db:
-            db.update(id, json.loads(docfile.read()), add=add)
+            db.update(id, json.loads(docfile.read()))
     except KeyError as error:
         raise click.ClickException(error)
 

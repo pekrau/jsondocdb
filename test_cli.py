@@ -48,7 +48,7 @@ class Test(unittest.TestCase):
                               encoding="utf-8")
 
     def get_db():
-        return yason.Database(self.DBFILEPATH)
+        return jsondblite.Database(self.DBFILEPATH)
 
     def setUp(self):
         try:
@@ -156,7 +156,7 @@ class Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         result = json.loads(p.stdout)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[1], {"key": "id3"})
+        self.assertEqual(result[0][1], {"key": "id3"})
 
     def test_07_lookup(self):
         p = self.execute("index-create", "ix", "$.key")
