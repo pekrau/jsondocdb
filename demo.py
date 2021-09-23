@@ -3,7 +3,7 @@
 import jsondblite
 
 # To create a new file use 'create=True'.
-# To use an existing file, 'create=False', which is the default
+# To use an existing file, 'create=False', which is the default.
 
 db = jsondblite.Database("demo.db", create=True)
 
@@ -13,8 +13,9 @@ db = jsondblite.Database("demo.db", create=True)
 with db:
      # Add a document with a specified key.
     db["id1"] = {"key": "k1", "n": 3}
-    doc = {"key": "k2", "n": 5}
+
     # Add a document, letting YasonDB set a UUID4-based key, which is returned.
+    doc = {"key": "k2", "n": 5}
     autoid = db.add(doc)
 
 if db[autoid] == doc:

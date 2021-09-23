@@ -7,7 +7,7 @@ Built on Sqlite3 and JSONPath in Python.
 import jsondblite
 
 # To create a new file use 'create=True'.
-# To use an existing file, 'create=False', which is the default
+# To use an existing file, 'create=False', which is the default.
 
 db = jsondblite.Database("demo.db", create=True)
 
@@ -17,8 +17,9 @@ db = jsondblite.Database("demo.db", create=True)
 with db:
      # Add a document with a specified key.
     db["id1"] = {"key": "k1", "n": 3}
+
+    # Add a document, letting jsondblite set a UUID4-based key, which is returned.
     doc = {"key": "k2", "n": 5}
-    # Add a document, letting YasonDB set a UUID4-based key, which is returned.
     autoid = db.add(doc)
 
 if db[autoid] == doc:
@@ -102,7 +103,7 @@ Raises:
 Add or update the document with the given id in the database.
 
 Raises:
-- `YasonDb.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `del db[id]`
 
@@ -110,7 +111,7 @@ Delete the document with the given id from the database.
 No error if the document with the given key does not exist.
 
 Raises:
-- `YasonDb.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `id in db`
 
@@ -144,7 +145,7 @@ End the transaction, storing the modifications. Use the context
 manager instead.
 
 Raises:
-- `YasonDb.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.rollback()`
 
@@ -152,7 +153,7 @@ End the transaction, discaring the modifications. Use the context
 manager instead.
 
 Raises:
-- `YasonDb.NotInTransaction`
+- `jsondblite.NotInTransaction`
 
 ### `db.get(id, default=None)`
 
