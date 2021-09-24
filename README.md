@@ -276,6 +276,7 @@ Return a list of all ids for the documents having
 the given value in the named index.
 
 Raises:
+- `ValueError`: The value cannot be None, since not in the index.
 - `KeyError`: If there is no such index.
 
 ### `db.range(indexname, low, high, limit=None, offset=None)`

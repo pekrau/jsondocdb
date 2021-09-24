@@ -115,8 +115,11 @@ class Test(unittest.TestCase):
             self.db.add({"key": 1, "field": 8901})
             self.db.add({"key": 3, "key2": 2, "field": 8})
             self.db.add({"key": 5, "field": 4})
+            self.db.add({"key": None, "field": 4})
         result = self.db.search("$.key", 1)
         self.assertEqual(len(result), 2)
+        result = self.db.search("$.key", None)
+        self.assertEqual(len(result), 1)
         result = self.db.search("$.key2", 1)
         self.assertEqual(len(result), 1)
         result = self.db.search("$.no_such_key", 1)
@@ -182,6 +185,8 @@ class Test(unittest.TestCase):
             self.db.create_index(index_name1, "$.key")
             index_name2 = "key2_index"
             self.db.create_index(index_name2, "field")
+            # This doc will not be in the index; value None not entered.
+            self.db.add({"key": None, "key3": 123})
         info = self.db.get_index(index_name1)
         self.assertEqual(info["count"], 4)
         self.assertEqual(info["min"], "akey")

@@ -13,7 +13,7 @@ import click
 from jsonpath_ng import JSONPathError
 from jsonpath_ng.ext import parse as jsonpathparse
 
-__version__ = "0.7.4"
+__version__ = "0.7.5"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -186,7 +186,7 @@ class Database:
     def add(self, doc: dict, id: Optional[str]=None) -> str:
         """Add the document to the database.
         If id is not provided, create a UUID4 id.
-        Return the id.
+        Return the id actually used.
 
         Raises:
         - ValueError: If doc is not a dictionary.
@@ -398,13 +398,16 @@ class Database:
         self.cnx.execute(f"DROP TABLE index_{indexname}")
         self._index_cache.pop(indexname, None)
 
-    def lookup(self, indexname: str, value:str):
+    def lookup(self, indexname: str, value):
         """Return a list of all ids for the documents having
         the given value in the named index.
 
         Raises:
+        - ValueError: The value cannot be None, since not in the index.
         - KeyError: If there is no such index.
         """
+        if value is None:
+            raise ValueError("Value cannot be None; not in index.")
         sql = f"SELECT docs.id FROM index_{indexname}, docs" \
             f" WHERE index_{indexname}.value=? AND docs.id=index_{indexname}.id"
         try:
@@ -418,8 +421,13 @@ class Database:
         a value in the named index within the given inclusive range.
 
         Raises:
+        - ValueError: The values for 'low' and 'high' are not comparable.
         - KeyError: If there is no such index.
         """
+        try:
+            low < high
+        except TypeError:
+            raise ValueError("Values are not comparable.")
         sql = f"SELECT docs.id, docs.doc FROM index_{indexname}, docs"\
             f" WHERE ?<=value AND value<=? AND docs.id=index_{indexname}.id" \
             f" ORDER BY index_{indexname}.value"
@@ -469,7 +477,10 @@ class Database:
                 self._index_cache[indexname] = expression
             sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
             for match in expression.find(doc):
-                self.cnx.execute(sql, (id, match.value))
+                try:
+                    self.cnx.execute(sql, (id, match.value))
+                except sqlite3.IntegrityError: # Value 'None' not entered.
+                    pass
 
     def _remove_from_indexes(self, id: str):
         "Remove the document with the given id from the indexes."
