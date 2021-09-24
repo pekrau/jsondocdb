@@ -8,7 +8,7 @@ except OSError:
 
 import jsondblite
 
-# To create a new file specify 'create=True' explicitly.
+# To create a new database file specify 'create=True' explicitly.
 db = jsondblite.Database("demo.db", create=True)
 
 # Database modifications must be done within a transaction,

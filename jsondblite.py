@@ -1,4 +1,4 @@
-"""JSON document database, with indexes and transactions.
+"""JSON document database in a file, with indexes and transactions.
 Built on Sqlite3 and JSONPath in Python.
 """
 

@@ -1,12 +1,12 @@
 # jsondblite
 
-JSON document database, with indexes and transactions.
+JSON document database in a file, with indexes and transactions.
 Built on Sqlite3 and JSONPath in Python.
 
 ```python
 import jsondblite
 
-# To create a new file specify 'create=True' explicitly.
+# To create a new database file specify 'create=True' explicitly.
 db = jsondblite.Database("demo.db", create=True)
 
 # Database modifications must be done within a transaction,
