@@ -7,13 +7,13 @@ import os.path
 import re
 import sqlite3
 import uuid
-from typing import Any, Optional, List, Union
+from typing import Any, Optional, List, Dict, Tuple, Union, Iterable
 
 import click
-from jsonpath_ng import JSONPathError
-from jsonpath_ng.ext import parse as jsonpathparse
+from jsonpath_ng import JSONPathError # type: ignore
+from jsonpath_ng.ext import parse as jsonpathparse # type: ignore
 
-__version__ = "0.7.5"
+__version__ = "0.7.6"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -27,7 +27,7 @@ def _jsondoc_adapter(jsondoc):
 sqlite3.register_converter("JSONDOC", _jsondoc_converter)
 sqlite3.register_adapter(dict, _jsondoc_adapter)
 
-def _json_str(doc, indent):
+def _json_str(doc: dict, indent: Optional[int]=None):
     if isinstance(indent, int) and indent <= 0: indent = None
     return json.dumps(doc, indent=indent, ensure_ascii=False)
 
@@ -71,9 +71,10 @@ class Database:
                 self.cnx.execute("SELECT COUNT(*) FROM indexes")
             except sqlite3.Error:
                 raise InvalidDatabaseError("The database file is not a jsondblite file.")
-        self._index_cache = {}  # key: jsonpath; value: parsed jsonpath
+        # key: jsonpath; value: parsed jsonpath
+        self._index_cache = {} # type: Dict[str, Any]
 
-    def _connect(self, dbfilepath: str) -> Any:
+    def _connect(self, dbfilepath: str):
         "Open the Sqlite3 connection."
         self.cnx = sqlite3.connect(dbfilepath,
                                    detect_types=sqlite3.PARSE_DECLTYPES,
@@ -83,8 +84,8 @@ class Database:
         "Return a string with info on number of documents and indexes."
         return f"Database has {len(self)} documents, {len(self.get_indexes())} indexes."
 
-    def __iter__(self):
-        "Return a generator over ids for all documents in the database."
+    def __iter__(self) -> Iterable[dict]:
+        "Return an iterator over ids for all documents in the database."
         sql = "SELECT id FROM docs ORDER BY id"
         return (row[0] for row in self.cnx.execute(sql))
 
@@ -96,7 +97,7 @@ class Database:
         "Close the database connection."
         self.close()
 
-    def __getitem__(self, id) -> dict:
+    def __getitem__(self, id: Union[str, int]) -> dict:
         """Return the document with the given id.
 
         Raises:
@@ -144,7 +145,7 @@ class Database:
         return False
 
     @property
-    def in_transaction(self):
+    def in_transaction(self) -> bool:
         "Are we within a transaction?"
         return self.cnx.in_transaction
 
@@ -176,7 +177,7 @@ class Database:
             raise NotInTransactionError
         self.cnx.execute("ROLLBACK")
 
-    def get(self, id: str, default: Optional[dict]=None):
+    def get(self, id: str, default: Optional[dict]=None) -> Optional[dict]:
         "Retrieve the document given its id, else the default."
         try:
             return self[id]
@@ -241,8 +242,8 @@ class Database:
         if cursor.rowcount == 0:
             raise KeyError(f"No such document '{id}' to delete.")
 
-    def have_jsonpath(self, jsonpath):
-        """Return a generator providing ids of all documents
+    def have_jsonpath(self, jsonpath: str) -> Iterable[str]:
+        """Return an iterator providing ids of all documents
         matching the given JSON path.
 
         Raises:
@@ -255,8 +256,8 @@ class Database:
         cursor = self.cnx.execute("SELECT id, doc FROM docs")
         return (id for id, doc in cursor if expression.find(doc))
 
-    def lack_jsonpath(self, jsonpath):
-        """Return a generator providing ids of all documents 
+    def lack_jsonpath(self, jsonpath: str) -> Iterable[str]:
+        """Return an iterator providing ids of all documents 
         not matching the given JSON path.
 
         Raises:
@@ -269,7 +270,7 @@ class Database:
         cursor = self.cnx.execute("SELECT id, doc FROM docs")
         return (id for id, doc in cursor if not expression.find(doc))
 
-    def search(self, jsonpath, value):
+    def search(self, jsonpath: str, value: Union[str, int]) -> List[Tuple[str, dict]]:
         """Return a list of tuple(id, doc) for all documents that have
         the given value at the given JSON path.
 
@@ -298,7 +299,9 @@ class Database:
             return False
 
     def create_index(self, indexname: str, jsonpath: str):
-        """Create an index for a given JSON path.
+        """Create an index for a given JSON path. If the JSON path
+        produces something other than a str or an int for a document,
+        then that match is not entered into the index.
 
         Raises:
         - ValueError: The indexname is invalid or already in use, or
@@ -332,7 +335,7 @@ class Database:
             for match in expression.find(doc):
                 self.cnx.execute(sql, (id, match.value))
 
-    def get_indexes(self):
+    def get_indexes(self) -> List[str]:
         "Return the list names for the current indexes."
         sql = "SELECT indexname FROM indexes"
         return [indexname for (indexname,) in self.cnx.execute(sql)]
@@ -361,8 +364,8 @@ class Database:
             result["max"] = cursor.fetchone()[0]
         return result
 
-    def get_index_values(self, indexname: str):
-        """Return a generator to provide all tuples (id, value) in the index.
+    def get_index_values(self, indexname: str) -> Iterable[Tuple[str, int]]:
+        """Return an iterator to provide all tuples (id, value) in the index.
 
         Raises:
         - KeyError: If there is no such index.
@@ -415,19 +418,20 @@ class Database:
         except sqlite3.Error:
             raise KeyError(f"No such index '{indexname}'.")
 
-    def range(self, indexname: str, low: str, high: str, 
-              limit: Optional[int]=None, offset: Optional[int]=None) -> Any:
-        """Return a generator over all ids for the documents having 
+    def range(self, indexname: str,
+              low: Union[str, int], 
+              high: Union[str, int],
+              limit: Optional[int]=None, 
+              offset: Optional[int]=None) -> Iterable[str]:
+        """Return an iterator over all ids for the documents having 
         a value in the named index within the given inclusive range.
 
         Raises:
-        - ValueError: The values for 'low' and 'high' are not comparable.
+        - ValueError: The types of 'low' and 'high' are not the same.
         - KeyError: If there is no such index.
         """
-        try:
-            low < high
-        except TypeError:
-            raise ValueError("Values are not comparable.")
+        if type(low) != type(high): 
+            raise ValueError("Values are not of the same type.")
         sql = f"SELECT docs.id, docs.doc FROM index_{indexname}, docs"\
             f" WHERE ?<=value AND value<=? AND docs.id=index_{indexname}.id" \
             f" ORDER BY index_{indexname}.value"
@@ -440,7 +444,7 @@ class Database:
         except sqlite3.Error:
             raise KeyError(f"No such index '{indexname}'.")
 
-    def backup(self, dbfilepath):
+    def backup(self, dbfilepath: str):
         """Backup this database safely into a new file at the given path.
 
         Raises:
@@ -477,10 +481,8 @@ class Database:
                 self._index_cache[indexname] = expression
             sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
             for match in expression.find(doc):
-                try:
+                if isinstance(match.value, (str, int)):
                     self.cnx.execute(sql, (id, match.value))
-                except sqlite3.IntegrityError: # Value 'None' not entered.
-                    pass
 
     def _remove_from_indexes(self, id: str):
         "Remove the document with the given id from the indexes."

@@ -10,7 +10,7 @@ import jsondblite
 db = jsondblite.Database("demo.db", create=True)
 
 # Database modifications must be done within a transaction,
-# which are created using a 'with' context manager.
+# which is created using a 'with' context manager.
 with db:
      # Add a document with a specified identifier.
     db["id1"] = {"key": "k1", "n": 3}
