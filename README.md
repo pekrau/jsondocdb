@@ -6,68 +6,46 @@ Built on Sqlite3 and JSONPath in Python.
 ```python
 import jsondblite
 
-# To create a new database file specify 'create=True' explicitly.
-db = jsondblite.Database("demo.db", create=True)
+db = jsondblite.Database("demo.db", create=True) # Explicitly create new db.
 
-# Database modifications must be done within a transaction,
-# which is created using a 'with' context manager.
-with db:
-     # Add a document with a specified identifier.
-    db["id1"] = {"key": "k1", "n": 3}
+with db:                 # Database transaction; required for modifications.
+    db["id1"] = {"key": "k1", "n": 3}   # Specify identifier explicitly.
 
-    # Add a document, letting the system set a UUID4-based identifier,
-    # which is returned.
-    doc = {"key": "k2", "n": 5}
+    doc = {"key": "k2", "n": 5}  # Let the system set and return a UUID4 id.
     autoid = db.add(doc)
 
 if db[autoid] == doc:
     print("Fetched doc is equal to previously input.")
-# output> Fetched doc is equal to previously input.
 
-# Not allowed to add if the identifier is already in use.
 try:
     with db:
-        db.add({"key2": "x"}, autoid)
+        db.add({"key2": "x"}, autoid)  # Won't work; id already in use.
 except KeyError as error:
     print(error)
-# output> "The id 'a06bd6326dbb4a80af301e628e781207' already exists."
 
-# But update is allowed.
 with db:
-    db.update(autoid, {"key2": "x"})
+    db.update(autoid, {"key2": "x"})  # Update existing entry.
 
-# Find all documents having a given value at the given JSON path.
-# Tuples (id, doc) are returned.
-# No transaction is required since nothing is modified.
-found = db.search("$.key", "k1")
+found = db.search("$.key", "k1")  # Find all docs value at JSON path.
+                                  # Tuples (id, doc) are returned.
 print(len(found), "documents having the value 'k1' for item 'key'.")
-# output> 1 documents having the value 'k1' for item 'key'.
 
-# Create a named index using JSONPath: documents giving one or more
-# matches with the path will be present in the index.
 with db:
-    db.create_index("key_index", "$.key")
+    db.create_index("key_index", "$.key") # Named index using JSON path.
     doc = {"key": "k3"}
     db["in_index"] = doc
     db["not_in_index"] = {"key2": "k4"}
 
-# 'lookup' returns a list of ids for matching documents from the named index.
-# No transaction is required since nothing is modified.
-found = db.lookup("key_index", "k3")
+found = db.lookup("key_index", "k3")  # Return list of ids of matching docs.
 if len(found) == 1 and db[found[0]] == doc:
     print("Found doc is equal to previously input.")
-# output> Found doc is equal to previously input.
 
 if not db.in_index("key_index", "k4"):
     print("Document is not in this index.")
-# output> Document is not in this index.
 
-# 'range' returns a generator of identifiers of documents  matching
-# the inclusive interval ["k1", "k2"].
-
-ids = list(db.range("key_index", "k1", "k3"))
+ids = list(db.range("key_index", "k1", "k3"))  # Return generator of ids of docs
+                                               # matching inclusive interval.
 print(f"'range' returned {len(ids)} ids within low and high inclusive.")
-# output> 'range' returned 2 ids within low and high inclusive.
 
 # Measure CPU time to add 100000 documents.
 import time
