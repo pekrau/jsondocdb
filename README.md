@@ -227,7 +227,7 @@ Raises:
 
 ### `create_function_index(indexname, function)`
 
-Create an index that uses the given callable 'function' to compute the
+Create an index that uses the given callable `function` to compute the
 index table entries for a document. The callable takes a document
 'dict' and must produce a (possibly empty) list containing 'str' or
 'int' values.  Other value types in the list are ignored.
@@ -236,9 +236,9 @@ Since the callable is not stored in the database, it will have to be
 provided each time the database is opened subsequently.
 
 Raises:
-- KeyError: The indexname is invalid or already in use.
-- ValueError: 'function' is not a callable, or it did not return a list.
-- jsondblite.NotInTransaction
+- `KeyError`: The indexname is invalid or already in use.
+- `ValueError`: `function` is not a callable, or did not return a list.
+- `jsondblite.NotInTransaction`
 
 ### `db.get_indexes()`
 

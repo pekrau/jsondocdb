@@ -357,7 +357,7 @@ class Database:
 
         Raises:
         - KeyError: The indexname is invalid or already in use.
-        - ValueError: 'function' is not a callable, or it did not return a list.
+        - ValueError: 'function' is not a callable, or did not return a list.
         - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
