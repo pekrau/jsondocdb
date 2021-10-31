@@ -242,7 +242,7 @@ Raises:
 
 ### `db.get_indexes()`
 
-Return the list names for the current indexes.
+Return the list of names for the current indexes.
 
 ### `db.get_index(indexname)`
 

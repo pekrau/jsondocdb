@@ -383,7 +383,7 @@ class Database:
                     self.cnx.execute(sql, (id, value))
 
     def get_indexes(self) -> List[str]:
-        "Return the list names for the current indexes."
+        "Return the list of names for the current indexes."
         sql = "SELECT indexname FROM indexes"
         return [indexname for (indexname,) in self.cnx.execute(sql)]
 
