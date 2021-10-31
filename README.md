@@ -71,7 +71,7 @@ print(f"Added {N:,} documents in {delta:.3g} seconds, {1000*delta/N:.3g} ms per 
 
 'index_functions': Dictionary with the index name as key and
 a callable as value. Required if the database has indexes
-created with callables. See `[create_function_index](#create_function_indexindexname-function)`.
+created with callables. See [`create_function_index`](#create_function_indexindexname-function).
 
 Raises:
 - `IOError`: The file exists when it shouldn't, and vice versa,
