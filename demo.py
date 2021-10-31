@@ -49,6 +49,17 @@ ids = list(db.range("key_index", "k1", "k3"))  # Return generator of ids of docs
                                                # matching inclusive interval.
 print(f"'range' returned {len(ids)} ids within low and high inclusive.")
 
+def key_function(doc):          # Function returning values for a key.
+    try:
+        return [doc["key"]]
+    except KeyError:
+        return []
+
+with db:                        # Add a function-defined index.
+    db.create_function_index("key_function_index", key_function)
+if db.lookup("key_index", "k3") == db.lookup("key_function_index", "k3"):
+    print("Same result for JSON path index and function index.")
+
 # Measure CPU time to add 100000 documents.
 import time
 N = 100000
@@ -60,4 +71,4 @@ with db:
         db.add(doc)
 delta = time.process_time() - start
 print(f"Added {N:,} documents in {delta:.3g} seconds, {1000*delta/N:.3g} ms per document.")
-# output> Added 100,000 documents in 3.01 seconds, 0.0301 ms per document.
+# output> Added 100,000 documents in 3.93 seconds, 0.0393 ms per document.

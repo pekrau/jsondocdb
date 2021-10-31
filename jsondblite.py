@@ -7,13 +7,13 @@ import os.path
 import re
 import sqlite3
 import uuid
-from typing import Any, Optional, List, Dict, Tuple, Union, Iterable
+from typing import Any, Optional, List, Dict, Tuple, Union, Iterable, Callable
 
 import click
 from jsonpath_ng import JSONPathError # type: ignore
 from jsonpath_ng.ext import parse as jsonpathparse # type: ignore
 
-__version__ = "0.7.6"
+__version__ = "0.8.1"
 
 _INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
@@ -35,7 +35,8 @@ def _json_str(doc: dict, indent: Optional[int]=None):
 class Database:
     "JSON document database, with indexes and transactions."
 
-    def __init__(self, dbfilepath: str, create: bool=False):
+    def __init__(self, dbfilepath: str, create: bool=False,
+                 index_functions: Optional[dict]=None):
         """Connect to the jsondblite database file given by the dbfilepath.
         The special dbfilepath ':memory' indicates an in-memory database.
 
@@ -43,10 +44,15 @@ class Database:
           - False: The database file must exist, and must be a jsondblite database.
           - True: Create and initialize the file. It must not exist.
 
+        'index_functions': Dictionary with the index name as key and
+        a callable as value. Required if the database has indexes
+        created with callables. See 'create_function_index'.
+
         Raises:
         - IOError: The file exists when it shouldn't, and vice versa,
           depending on `create`.
         - ValueError: Could not initialize the jsondblite database.
+        - KeyError: The callable is missing for a function index.
         - jsondblite.InvalidDatabaseError: The file is not a jsondblite file.
         """
         if create:
@@ -70,9 +76,17 @@ class Database:
                 self.cnx.execute("SELECT COUNT(*) FROM docs")
                 self.cnx.execute("SELECT COUNT(*) FROM indexes")
             except sqlite3.Error:
-                raise InvalidDatabaseError("The database file is not a jsondblite file.")
-        # key: jsonpath; value: parsed jsonpath
+                raise InvalidDatabaseError
+        # key: jsonpath; value: parsed jsonpath or callable
         self._index_cache = {} # type: Dict[str, Any]
+        # Set the callables for the function indexes.
+        index_functions = index_functions or {}
+        sql = "SELECT jsonpath FROM indexes WHERE indexname=?"
+        for indexname in self.get_indexes():
+            cursor = self.cnx.execute(sql, (indexname,))
+            row = cursor.fetchone()
+            if row[0] == "__callable__":
+                self._index_cache[indexname] = index_functions[indexname]
 
     def _connect(self, dbfilepath: str):
         "Open the Sqlite3 connection."
@@ -299,41 +313,74 @@ class Database:
             return False
 
     def create_index(self, indexname: str, jsonpath: str):
-        """Create an index for a given JSON path. If the JSON path
-        produces something other than a str or an int for a document,
-        then that match is not entered into the index.
+        """Create an index for a given JSON path. The JSON path is applied
+        to each document 'dict' and must produce (possibly empty) list
+        containing 'str' or 'int' values. Other value types are
+        ignored.
 
         Raises:
-        - ValueError: The indexname is invalid or already in use, or
-          the given JSON path is invalid.
+        - KeyError: The indexname is invalid or already in use.
+        - ValueError: The given JSON path is invalid.
         - jsondblite.NotInTransaction
         """
         if not self.in_transaction:
             raise NotInTransactionError
         if not _INDEXNAME_RX.match(indexname):
-            raise ValueError(f"Invalid index name '{indexname}'.")
+            raise KeyError(f"Invalid index name '{indexname}'.")
         if self.index_exists(indexname):
-            raise ValueError(f"Index '{indexname}' is already defined.")
+            raise KeyError(f"Index '{indexname}' is already defined.")
         try:
             expression = jsonpathparse(jsonpath)
         except JSONPathError as error:
             raise ValueError(f"Invalid JSON path: {error}")
-        try:
-            sql = "INSERT INTO indexes (indexname, jsonpath) VALUES (?, ?)"
-            self.cnx.execute(sql, (indexname, jsonpath))
-            sql = f"CREATE TABLE index_{indexname}" \
-                " (id TEXT PRIMARY KEY, value NOT NULL)"
-            self.cnx.execute(sql)
-            sql = f"CREATE INDEX index_{indexname}_ix ON index_{indexname} (value)"
-        except sqlite3.Error as error:
-            raise ValueError(f"Could not create index '{indexname}': {error}")
         self._index_cache[indexname] = expression
+        self._create_index_tables(indexname, jsonpath)
+        # All current documents have to be processed into the new index.
         sql = "SELECT id, doc FROM docs"
         cursor = self.cnx.execute(sql)
         sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
         for id, doc in cursor:
             for match in expression.find(doc):
-                self.cnx.execute(sql, (id, match.value))
+                if isinstance(match.value, (str, int)):
+                    self.cnx.execute(sql, (id, match.value))
+
+    def create_function_index(self, indexname: str, 
+                              function: Callable[[Dict], List[Union[str,int]]]):
+        """Create an index that uses the given callable 'function' 
+        to compute the index table entries for a document. The
+        callable takes a document 'dict' and must produce a (possibly
+        empty) list containing 'str' or 'int' values.  Other value
+        types in the list are ignored.
+
+        Since the callable is not stored in the database, it will have
+        to be provided each time the database is opened subsequently.
+
+        Raises:
+        - KeyError: The indexname is invalid or already in use.
+        - ValueError: 'function' is not a callable, or it did not return a list.
+        - jsondblite.NotInTransaction
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError
+        if not _INDEXNAME_RX.match(indexname):
+            raise KeyError(f"Invalid index name '{indexname}'.")
+        if self.index_exists(indexname):
+            raise KeyError(f"Index '{indexname}' is already defined.")
+        if not callable(function):
+            raise ValueError("The given function is not a callable.")
+        self._index_cache[indexname] = function
+        self._create_index_tables(indexname, "__callable__")
+        # All current documents have to be processed into the new index.
+        sql = "SELECT id, doc FROM docs"
+        cursor = self.cnx.execute(sql)
+        sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
+        for id, doc in cursor:
+            values = function(doc)
+            if not isinstance(values, list):
+                raise ValueError("index 'function' did not return a list.")
+            for value in function(doc):
+                if isinstance(value, (str, int)):
+                    self.cnx.execute(sql, (id, value))
 
     def get_indexes(self) -> List[str]:
         "Return the list names for the current indexes."
@@ -469,20 +516,42 @@ class Database:
         except AttributeError:
             pass
 
+    def _create_index_tables(self, indexname, jsonpath):
+        "Add the index, and create the two index tables for the named index."
+        try:
+            sql = "INSERT INTO indexes (indexname, jsonpath) VALUES (?, ?)"
+            self.cnx.execute(sql, (indexname, jsonpath))
+            sql = f"CREATE TABLE index_{indexname}" \
+                " (id TEXT NOT NULL, value NOT NULL)"
+            self.cnx.execute(sql)
+            sql = f"CREATE INDEX index_{indexname}_id_ix" \
+                f" ON index_{indexname} (id)"
+            self.cnx.execute(sql)
+            sql = f"CREATE INDEX index_{indexname}_value_ix" \
+                f" ON index_{indexname} (value)"
+            self.cnx.execute(sql)
+        except sqlite3.Error as error:
+            raise ValueError(f"Could not create index '{indexname}': {error}")
+
     def _add_to_indexes(self, id: str, doc: dict):
         "Add the document with the given id to the indexes."
         sql = "SELECT indexname, jsonpath FROM indexes"
         cursor = self.cnx.execute(sql)
         for indexname, jsonpath in cursor:
             try:
-                expression = self._index_cache[indexname]
+                expression_or_function = self._index_cache[indexname]
             except KeyError:
-                expression = jsonpathparse(jsonpath)
-                self._index_cache[indexname] = expression
+                expression_or_function = jsonpathparse(jsonpath)
+                self._index_cache[indexname] = expression_or_function
             sql = f"INSERT INTO index_{indexname} (id, value) VALUES(?, ?)"
-            for match in expression.find(doc):
-                if isinstance(match.value, (str, int)):
-                    self.cnx.execute(sql, (id, match.value))
+            if callable(expression_or_function):
+                for value in expression_or_function(doc):
+                    if isinstance(value, (str, int)):
+                        self.cnx.execute(sql, (id, value))
+            else:
+                for match in expression_or_function.find(doc):
+                    if isinstance(match.value, (str, int)):
+                        self.cnx.execute(sql, (id, match.value))
 
     def _remove_from_indexes(self, id: str):
         "Remove the document with the given id from the indexes."

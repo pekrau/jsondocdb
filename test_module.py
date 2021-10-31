@@ -213,5 +213,25 @@ class Test(unittest.TestCase):
         result = list(self.db.range("index1", 1, 5))
         self.assertEqual(len(result), 5)
 
+    def test_14_function_index(self):
+        def key_function(doc):
+            try:
+                return [doc["key"]]
+            except KeyError:
+                return []
+        with self.db:
+            id = self.db.add({"key": 1, "key2": 1, "field": 2})
+            self.db.add({"key": 2, "field": 4})
+            self.db.add({"key": 1, "field": 8901})
+            self.db.add({"key": 3, "key2": 2, "field": 8})
+            self.db.add({"key": 5, "field": 4})
+            self.db.create_function_index("index1", key_function)
+        result = list(self.db.range("index1", 1, 3))
+        self.assertEqual(len(result), 4)
+        self.assertEqual(self.db[result[0]]["key"], 1)
+        self.assertEqual(self.db[result[-1]]["key"], 3)
+        result = list(self.db.range("index1", 1, 5))
+        self.assertEqual(len(result), 5)
+
 if __name__ == "__main__":
     unittest.main()

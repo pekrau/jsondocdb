@@ -61,7 +61,7 @@ print(f"Added {N:,} documents in {delta:.3g} seconds, {1000*delta/N:.3g} ms per 
 # output> Added 100,000 documents in 3.01 seconds, 0.0301 ms per document.
 ```
 
-## `class Database(dbfilepath, create=False)`
+## `class Database(dbfilepath, create=False, index_functions=None)`
 
 - `dbfilepath`: The filepath for the jsondblite database file.
   The special value `:memory:` indicates an in-memory database.
@@ -69,10 +69,15 @@ print(f"Added {N:,} documents in {delta:.3g} seconds, {1000*delta/N:.3g} ms per 
   - `False`: The database file must exist, and must be a jsondblite database.
   - `True`: Create and initialize the file. It must not exist.
 
+'index_functions': Dictionary with the index name as key and
+a callable as value. Required if the database has indexes
+created with callables. See `[create_function_index](#create_function_indexindexname-function)`.
+
 Raises:
 - `IOError`: The file exists when it shouldn't, and vice versa,
   depending on `create`.
 - `ValueError`: Could not initialize the jsondblite database.
+- `KeyError`: The callable is missing for a function index.
 - `jsondblite.InvalidDatabaseError`: The file is not a jsondblite file.
 
 ### `str(db)`
@@ -211,12 +216,29 @@ Does the named index exist?
         
 ### `db.create_index(indexname, jsonpath)`
 
-Create an index for a given JSON path.
+Create an index for a given JSON path. The JSON path is applied to
+each document 'dict' and must produce (possibly empty) list containing
+'str' or 'int' values. Other value types are ignored.
 
 Raises:
-- `ValueError`: The indexname is invalid or already in use, or the given
-  JSON path is invalid.
+- `KeyError`: The indexname is invalid or already in use.
+- `ValueError`: The JSON path is invalid.
 - `jsondblite.NotInTransaction`
+
+### `create_function_index(indexname, function)`
+
+Create an index that uses the given callable 'function' to compute the
+index table entries for a document. The callable takes a document
+'dict' and must produce a (possibly empty) list containing 'str' or
+'int' values.  Other value types in the list are ignored.
+
+Since the callable is not stored in the database, it will have to be
+provided each time the database is opened subsequently.
+
+Raises:
+- KeyError: The indexname is invalid or already in use.
+- ValueError: 'function' is not a callable, or it did not return a list.
+- jsondblite.NotInTransaction
 
 ### `db.get_indexes()`
 
