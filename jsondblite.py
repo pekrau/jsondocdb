@@ -38,7 +38,7 @@ class Database:
     def __init__(self, dbfilepath: str, create: bool=False,
                  index_functions: Optional[dict]=None):
         """Connect to the jsondblite database file given by the dbfilepath.
-        The special dbfilepath ':memory' indicates an in-memory database.
+        The special dbfilepath ':memory:' indicates an in-memory database.
 
         'create':
           - False: The database file must exist, and must be a jsondblite database.
