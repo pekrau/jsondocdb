@@ -352,8 +352,9 @@ class Database:
         empty) list containing 'str' or 'int' values.  Other value
         types in the list are ignored.
 
-        Since the callable is not stored in the database, it will have
-        to be provided each time the database is opened subsequently.
+        Since callables are not stored in the database, all callables
+        will have to be provided each time a Database instance is
+        subsequently created. See 'class Database'.
 
         Raises:
         - KeyError: The indexname is invalid or already in use.

@@ -222,15 +222,15 @@ the given value at the given JSON path.
 Raises:
 - ValueError: Invalid JSON path.
 
-### `db.index_exists(indexname)
+### `db.index_exists(indexname)`
 
 Does the named index exist?
         
 ### `db.create_index(indexname, jsonpath)`
 
 Create an index for a given JSON path. The JSON path is applied to
-each document 'dict' and must produce (possibly empty) list containing
-'str' or 'int' values. Other value types are ignored.
+each document `dict` and must produce (possibly empty) list containing
+`str` or `int` values. Other value types are ignored.
 
 Raises:
 - `KeyError`: The indexname is invalid or already in use.
@@ -241,11 +241,12 @@ Raises:
 
 Create an index that uses the given callable `function` to compute the
 index table entries for a document. The callable takes a document
-'dict' and must produce a (possibly empty) list containing 'str' or
-'int' values.  Other value types in the list are ignored.
+`dict` and must produce a (possibly empty) list containing `str` or
+`int` values.  Other value types in the list are ignored.
 
-Since the callable is not stored in the database, it will have to be
-provided each time the database is opened subsequently.
+Since callables are not stored in the database, all callables will have to be
+provided each time a Database instance is subsequently created. See
+[`class Database`](#class-databasedbfilepath-createfalse-index_functionsnone)).
 
 Raises:
 - `KeyError`: The indexname is invalid or already in use.
