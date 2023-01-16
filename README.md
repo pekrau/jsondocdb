@@ -1,4 +1,4 @@
-# jsondblite
+# jsondocdb
 
 Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
 

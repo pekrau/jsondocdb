@@ -1,4 +1,4 @@
-"""jsondblite
+"""jsondocdb
 
 Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
 
@@ -26,32 +26,32 @@ sqlite3.register_converter("JSONDOC", _jsondoc_converter)
 sqlite3.register_adapter(dict, _jsondoc_adapter)
 
 
-class jsondbliteException(Exception):
-    "Base class for jsondblite errors."
+class jsondocdbException(Exception):
+    "Base class for jsondocdb errors."
     pass
 
-class InvalidFileError(jsondbliteException):
-    "The SQLite3 file is not a jsondblite file."
+class InvalidFileError(jsondocdbException):
+    "The SQLite3 file is not a jsondocdb file."
     pass
 
-class NoSuchDocumentError(jsondbliteException):
-    "The document was not found in the jsondblite database."
+class NoSuchDocumentError(jsondocdbException):
+    "The document was not found in the jsondocdb database."
     pass
 
-class InTransactionError(jsondbliteException):
+class InTransactionError(jsondocdbException):
     "Operation is invalid while in a transaction."
 
-class NotInTransactionError(jsondbliteException):
+class NotInTransactionError(jsondocdbException):
     "Operation is invalid when not in a transaction."
 
 
-class Jsondblite:
+class Jsondocdb:
     "Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic."
 
     def __init__(self, filepath, **kwargs):
         """Open or create the database file.
 
-        If the file exists, checks that it has the tables appropriate for jsondblite.
+        If the file exists, checks that it has the tables appropriate for jsondocdb.
 
         If the file is created, creates the required tables.
 
@@ -66,11 +66,11 @@ class Jsondblite:
         cursor = cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = [n[0] for n in cursor.fetchall()]
 
-        if names:     # Check that this is a jsondblite database file.
+        if names:     # Check that this is a jsondocdb database file.
             if set(names) != set(["docs", "indexes", "attachments"]):
                 raise InvalidFileError
 
-        else:   # Empty; initialize as a jsondblite database.
+        else:   # Empty; initialize as a jsondocdb database.
             cursor.execute(
                 "CREATE TABLE docs"
                 "(id TEXT PRIMARY KEY,"
@@ -92,7 +92,7 @@ class Jsondblite:
 
     def __str__(self):
         "Return a string with info on number of documents and indexes."
-        return f"jsondblite {__version__}: {len(self)} documents, {self.count_indexes()} indexes, {self.count_attachments()} attachments."
+        return f"jsondocdb {__version__}: {len(self)} documents, {self.count_indexes()} indexes, {self.count_attachments()} attachments."
 
     def __iter__(self):
         "Return an iterator over ids for all documents in the database."
@@ -238,7 +238,7 @@ class Jsondblite:
 
 
 if __name__ == "__main__":
-    db = Jsondblite("test.db")
+    db = Jsondocdb("test.db")
     print(db, list(db))
     with db:
         db["b"] = {"b": 2, "c":3, "d": [1,2,3]}
