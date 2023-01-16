@@ -5,7 +5,7 @@ Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
 The Logic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 
 import functools
@@ -45,6 +45,12 @@ class InTransactionError(jsondocdbException):
 class NotInTransactionError(jsondocdbException):
     "Operation is invalid when not in a transaction."
 
+class IndexSpecificationError(jsondocdbException):
+    "Index specification is invalid."
+
+class IndexExistsError(jsondocdbException):
+    "Index already exists."
+
 
 class Jsondocdb:
     "Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic."
@@ -68,77 +74,81 @@ class Jsondocdb:
         names = [n[0] for n in cursor.fetchall()]
 
         if names:     # Check that this is a jsondocdb database file.
-            if set(names) != set(["docs", "indexes", "attachments"]):
+            if set(["docs", "indexes", "attachments"]).difference(names):
                 raise InvalidFileError
 
-        else:   # Empty; initialize as a jsondocdb database.
+        else:   # Empty; initialize tables required for jsondocdb.
             cursor.execute(
                 "CREATE TABLE docs"
-                "(id TEXT PRIMARY KEY,"
+                "(docid TEXT PRIMARY KEY,"
                 " doc JSONDOC NOT NULL)")
             cursor.execute(
                 "CREATE TABLE indexes"
                 "(name TEXT PRIMARY KEY,"
                 " path JSONDOC NOT NULL,"
+                # XXX Add uniqueness flag; look out for reserved word clash.
                 " require JSONDOC)"
             )
             cursor.execute(
                 "CREATE TABLE attachments"
-                "(docid TEXT NOT NULL,"  # Foreign key to docs.id
+                "(docid TEXT NOT NULL,"  # Foreign key to docs.docid
                 " name TEXT NOT NULL,"
                 " mimetype TEXT NOT NULL,"
                 " size INT NOT NULL,"
                 " data BLOB NOT NULL)"
             )
 
+        self.indexes = dict([(row[0], {"path": row[1], "require": row[2]})
+                            for row in cursor.execute("SELECT name, path, require FROM indexes").fetchall()])
+
     def __str__(self):
         "Return a string with info on number of documents and indexes."
         return f"jsondocdb {__version__}: {len(self)} documents, {self.count_indexes()} indexes, {self.count_attachments()} attachments."
 
     def __iter__(self):
-        "Return an iterator over ids for all documents in the database."
-        return (row[0] for row in self.cnx.execute("SELECT id FROM docs ORDER BY id"))
+        "Return an iterator over document identifiers in the database."
+        return (row[0] for row in self.cnx.execute("SELECT docid FROM docs ORDER BY docid"))
 
     def __len__(self):
         "Return the number of documents in the database."
         return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
 
-    def __getitem__(self, id):
-        "Return the document with the given id."
-        row = self.cnx.execute("SELECT doc FROM docs WHERE id=?", (id,)).fetchone()
+    def __getitem__(self, docid):
+        "Return the document with the given identifier."
+        row = self.cnx.execute("SELECT doc FROM docs WHERE docid=?", (docid,)).fetchone()
         if not row:
-            raise NoSuchDocumentError(f"No such document '{id}'.")
+            raise NoSuchDocumentError(f"No such document '{docid}'.")
         return row[0]
 
-    def __setitem__(self, id, doc):
-        """Add or update the document in the database with the given id.
+    def __setitem__(self, docid, doc):
+        """Add or update the document in the database with the given identifier.
 
         Raises NotInTransactionError
         """
         if not self.in_transaction:
             raise NotInTransactionError("Cannot set item when not in transaction.")
-        if not isinstance(id, str):
-            raise ValueError("'id' must be an instance of 'str'.")
+        if not isinstance(docid, str):
+            raise ValueError("'docid' must be an instance of 'str'.")
         if not isinstance(doc, dict):
             raise ValueError("'doc' must be an instance of 'dict'.")
         cursor = self.cnx.cursor()
         try:
-            cursor.execute("INSERT INTO docs (id, doc) VALUES (?, ?)", (id, doc))
+            cursor.execute("INSERT INTO docs (docid, doc) VALUES (?, ?)", (docid, doc))
         except sqlite3.IntegrityError:
-            cursor.execute("UPDATE docs SET doc=? where id=?", (doc, id))
-        # Add to indexes.
+            cursor.execute("UPDATE docs SET doc=? where docid=?", (doc, docid))
+        # XXX Add to indexes.
 
-    def __delitem__(self, id):
-        """Delete the document with the given id from the database.
+    def __delitem__(self, docid):
+        """Delete the document with the given identifier from the database.
 
         Raises NotInTransactionError
         Raises NoSuchDocumentError
         """
-        self.delete(id)
+        self.delete(docid)
 
-    def __contains__(self, id):
-        "Return `True` if the given id is in the database, else `False`."
-        return bool(self.cnx.execute("SELECT COUNT(*) FROM docs WHERE id=?", (id,)).fetchone()[0])
+    def __contains__(self, docid):
+        "Return `True` if the given identifier is in the database, else `False`."
+        return bool(self.cnx.execute("SELECT COUNT(*) FROM docs WHERE docid=?", (docid,)).fetchone()[0])
 
     def __enter__(self):
         """A context manager for a transaction. All operations that modify
@@ -169,15 +179,17 @@ class Jsondocdb:
         "Are we within a transaction?"
         return self.cnx.in_transaction
 
-    def get(self, id, default=None):
-        "Return the document with the given id. If not found, return the 'default'."
+    def get(self, docid, default=None):
+        """Return the document with the given identifier.
+        If not found, return the 'default'.
+        """
         try:
             return self[id]
         except NoSuchDocumentError:
             return default
 
     def keys(self):
-        "Return an iterator over ids for all documents in the database."
+        "Return an iterator over identifiers for all documents in the database."
         return iter(self)
 
     def values(self):
@@ -185,11 +197,11 @@ class Jsondocdb:
         return (row[0] for row in self.cnx.execute("SELECT doc FROM docs ORDER BY id"))
 
     def items(self):
-        "Return an iterator over all tuples (id, document) in the database."
-        return ((row[0], row[1]) for row in self.cnx.execute("SELECT id, doc FROM docs ORDER BY id"))
+        "Return an iterator over all tuples (identifier, document) in the database."
+        return ((row[0], row[1]) for row in self.cnx.execute("SELECT docid, doc FROM docs ORDER BY docid"))
 
-    def delete(self, id):
-        """Delete the document with the given id from the database.
+    def delete(self, docid):
+        """Delete the document with the given identifier from the database.
 
         Raises NotInTransactionError
         Raises NoSuchDocumentError
@@ -197,11 +209,11 @@ class Jsondocdb:
         if not self.in_transaction:
             raise NotInTransactionError("Cannot delete an item when not in a transaction.")
         cursor = self.cnx.cursor()
-        cursor.execute("DELETE FROM docs WHERE id=?", (id,))
+        cursor.execute("DELETE FROM docs WHERE docid=?", (docid,))
         if cursor.rowcount != 1:
             raise NoSuchDocumentError
-        cursor.execute("DELETE FROM attachments WHERE docid=?", (id,))
-        # XXX Remove from indexes
+        cursor.execute("DELETE FROM attachments WHERE docid=?", (docid,))
+        # XXX Remove from indexes.
 
     def add_index(self, name, path, require=None):
         """Add an index with the given name to the database.
@@ -210,9 +222,17 @@ class Jsondocdb:
         path: The path in the data JSON document to index. If the path yields None,
         the document is not included in the index.
 
-        require: An optional jsonLogic expression. Only documents satisfying
-        the condition are included in the index.
+        require: An optional jsonLogic expression. If given, only documents 
+        satisfying the expression are included in the index. 
         """
+        if not _INDEX_NAME_RX.match(name):
+            raise IndexSpecificationError("Invalid index name.")
+        try:
+            self.cnx.execute("INSERT INTO indexes (name, path, require) VALUES (?, ?, ?)",
+                             (name, path, require))
+            # XXX Create the table with the index.
+        except sqlite3.IntegrityError:
+            raise IndexExistsError
         raise NotImplemented
 
     def delete_index(self, name):
@@ -468,4 +488,3 @@ if __name__ == "__main__":
                   ]:
         logic = Logic(expression)
         print(expression, logic(db["b"]), logic(db["x"]))
-    db.close()
