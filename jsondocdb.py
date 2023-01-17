@@ -5,7 +5,7 @@ Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
 The Logic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 
 import functools
@@ -14,14 +14,22 @@ import re
 import sqlite3
 
 
-_INDEXNAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
+_INDEX_NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
+_PYTYPES = {"int": int, "str": str, "float": float}
+_SQLTYPES = {"int": "INTEGER", "str": "TEXT", "float": "REAL"}
 
 
 def _jsondoc_converter(data):
-    return json.loads(data)
+    if data is None:
+        return None
+    else:
+        return json.loads(data)
 
 def _jsondoc_adapter(jsondoc):
-    return json.dumps(jsondoc, ensure_ascii=False)
+    if jsondoc is None:
+        return None
+    else:
+        return json.dumps(jsondoc, ensure_ascii=False)
 
 sqlite3.register_converter("JSONDOC", _jsondoc_converter)
 sqlite3.register_adapter(dict, _jsondoc_adapter)
@@ -46,13 +54,13 @@ class NotInTransactionError(jsondocdbException):
     "Operation is invalid when not in a transaction."
 
 class IndexSpecificationError(jsondocdbException):
-    "Index specification is invalid."
+    "Index specification is invalid, or index exists already."
 
-class IndexExistsError(jsondocdbException):
-    "Index already exists."
+class IndexUniqueError(jsondocdbException):
+    "Index unique constraint was violated."
 
 
-class Jsondocdb:
+class Database:
     "Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic."
 
     def __init__(self, filepath, **kwargs):
@@ -85,21 +93,27 @@ class Jsondocdb:
             cursor.execute(
                 "CREATE TABLE indexes"
                 "(name TEXT PRIMARY KEY,"
-                " path JSONDOC NOT NULL,"
-                # XXX Add uniqueness flag; look out for reserved word clash.
-                " require JSONDOC)"
+                " path TEXT NOT NULL," # The path string, not the Logic document.
+                " keytype TEXT NOT NULL,"
+                " uniq INTEGER NOT NULL," # Avoid conflict with reserved word.
+                " require JSONDOC)"       # Allow NULL.
             )
             cursor.execute(
                 "CREATE TABLE attachments"
                 "(docid TEXT NOT NULL,"  # Foreign key to docs.docid
                 " name TEXT NOT NULL,"
                 " mimetype TEXT NOT NULL,"
-                " size INT NOT NULL,"
+                " size INTEGER NOT NULL,"
                 " data BLOB NOT NULL)"
             )
 
-        self.indexes = dict([(row[0], {"path": row[1], "require": row[2]})
-                            for row in cursor.execute("SELECT name, path, require FROM indexes").fetchall()])
+        self.indexes = dict([(row[0], {"path": {"var": row[1]},
+                                       "keytype": row[2],
+                                       "unique": bool(row[3]),
+                                       "require": row[4]})
+                            for row in cursor.execute("SELECT name, path, keytype, uniq, require FROM indexes").fetchall()])
+        for indexdoc in self.indexes.values():
+            indexdoc["pytype"] = _PYTYPES[indexdoc["keytype"]]
 
     def __str__(self):
         "Return a string with info on number of documents and indexes."
@@ -124,6 +138,7 @@ class Jsondocdb:
         """Add or update the document in the database with the given identifier.
 
         Raises NotInTransactionError
+        Raises ValueError if docid or doc are of invalid type.
         """
         if not self.in_transaction:
             raise NotInTransactionError("Cannot set item when not in transaction.")
@@ -136,7 +151,8 @@ class Jsondocdb:
             cursor.execute("INSERT INTO docs (docid, doc) VALUES (?, ?)", (docid, doc))
         except sqlite3.IntegrityError:
             cursor.execute("UPDATE docs SET doc=? where docid=?", (doc, docid))
-        # XXX Add to indexes.
+        for name, indexdoc in self.indexes:
+            pass # XXX Add to indexes.
 
     def __delitem__(self, docid):
         """Delete the document with the given identifier from the database.
@@ -213,34 +229,95 @@ class Jsondocdb:
         if cursor.rowcount != 1:
             raise NoSuchDocumentError
         cursor.execute("DELETE FROM attachments WHERE docid=?", (docid,))
-        # XXX Remove from indexes.
+        for name in self.indexes:
+            cursor.execute(f"DELETE FROM i_{name} WHERE docid=?", (docid,))
 
-    def add_index(self, name, path, require=None):
-        """Add an index with the given name to the database.
-        All current documents will be indexed, so it might take a while.
+    def create_index(self, name, path, keytype, unique, require=None):
+        """Create an index with the given name to the database.
+        All current documents will be indexed, so this might take a while.
 
-        path: The path in the data JSON document to index. If the path yields None,
-        the document is not included in the index.
+        path: The path in the data JSON document to index.
+        If the path yields None, the document is not included in the index.
+        If the path yields a list, all elements in the list will be
+        included in the index.
+
+        keytype: The type of the index key value. One of the strings (not types!)
+        'str', 'int' or 'float'.
+
+        unique: Are the keys in the index required to be unique?
 
         require: An optional jsonLogic expression. If given, only documents 
         satisfying the expression are included in the index. 
         """
         if not _INDEX_NAME_RX.match(name):
-            raise IndexSpecificationError("Invalid index name.")
+            raise IndexSpecificationError(f"Invalid index name '{name}'.")
+        if name in self.indexes:
+            raise IndexSpecificationError(f"Index '{name}' already exists.")
+        if not isinstance(path, str):
+            raise IndexSpecificationError("Invalid index path; is not a str.")
         try:
-            self.cnx.execute("INSERT INTO indexes (name, path, require) VALUES (?, ?, ?)",
-                             (name, path, require))
-            # XXX Create the table with the index.
+            sqltype = _SQLTYPES[keytype]
+        except KeyError:
+            raise IndexSpecificationError(f"Invalid index keytype '{keytype}'.")
+        unique = bool(unique)
+        if require is not None and not isinstance(require, dict):
+            raise IndexSpecificationError("Invalid index require; is not a dict.")
+        cursor = self.cnx.cursor()
+        cursor.execute("BEGIN")
+        try:
+            cursor.execute("INSERT INTO indexes (name, path, keytype, uniq, require) VALUES (?, ?, ?, ?, ?)",
+                           (name, path, keytype, unique, require))
         except sqlite3.IntegrityError:
-            raise IndexExistsError
-        raise NotImplemented
+            raise IndexSpecificationError
+        else:
+            cursor.execute(f"CREATE TABLE i_{name}"
+                           f"(docid TEXT NOT NULL, value {sqltype} NOT NULL)")
+            cursor.execute(f"CREATE {unique and 'UNIQUE' or ''} INDEX x_{name}"
+                           f" ON i_{name} (value)")
+            # XXX Also index the docid column? Would make delete faster.
+            path = {"var": path}
+            pytype = _PYTYPES[keytype]
+            self.indexes[name] = {"path": path,
+                                  "keytype": keytype,
+                                  "pytype": pytype,
+                                  "unique": unique,
+                                  "require": require}
+            cursor.execute("SELECT docid, doc FROM docs")
+            path = Logic(path)
+            if require:
+                require = Logic(require)
+            for docid, doc in cursor.fetchall():
+                value = path(doc)
+                if value is not None:
+                    if not isinstance(value, pytype):
+                        raise ValueError(f"path value {value} is not of keytype '{keytype}'.")
+                    if not require or require(doc):
+                        try:
+                            self.cnx.execute(f"INSERT INTO i_{name} (docid, value) VALUES (?, ?)", (docid, value))
+                        except sqlite3.IntegrityError:
+                            raise IndexUniqueError
+        cursor.execute("COMMIT")
 
     def delete_index(self, name):
-        raise NotImplemented
+        "Delete the named index."
+        try:
+            self.indexes.pop(name)
+        except KeyError:
+            raise IndexSpecificationError(f"No such index '{name}'.")
+        else:
+            cursor = self.cnx.cursor()
+            cursor.execute("BEGIN")
+            cursor.execute(f"DROP TABLE i_{name}")
+            cursor.execute(f"DROP INDEX x_{name}")
+            cursor.execute("COMMIT")
+
+    def is_index(self, name):
+        "Is there an index with the given name?"
+        return name in self.indexes
 
     def get_indexes(self):
         "Return the list of names for the current indexes."
-        return [indexname for (indexname,) in self.cnx.execute("SELECT name FROM indexes")]
+        return list(self.indexes)
 
     def count_documents(self):
         "Return the number of documents in the database."
@@ -468,23 +545,17 @@ class Logic:
 
 
 if __name__ == "__main__":
-    db = Jsondocdb("test.db")
-    print(db, list(db))
+    db = Database("test.db")
     with db:
-        db["b"] = {"b": 2, "c":3, "d": [1,2,3]}
-    with db:
+        db["b"] = {"num": 2, "c":3, "d": [1,2,3]}
         db["x"] = {"erty": "apa"}
-    print(db, list(db))
-    for expression in [{"==": [{"var": "b"}, 2]},
-                  {"or": [
-                      {"and": [
-                          {"==": [{"var": "b"}, 2]},
-                          {"in": [2, {"var": "d"}]}
-                      ]
-                       },
-                      {"===": [{"var": "erty"}, "apa"]}
-                  ]
-                   }
-                  ]:
-        logic = Logic(expression)
-        print(expression, logic(db["b"]), logic(db["x"]))
+
+    if not db.is_index("some"):
+        db.create_index("some", "num", "int", False)
+        print("created index 'some'")
+    # else:
+    #     db.delete_index("some")
+    #     print("deleted index 'some'")
+
+    with db:
+        db["y"] = {"num": 2, "stuff": "blopp"}
