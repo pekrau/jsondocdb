@@ -5,7 +5,7 @@ Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
 The Logic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.3"
+__version__ = "1.0.0"
 
 
 import functools
@@ -14,9 +14,7 @@ import re
 import sqlite3
 
 
-_INDEX_NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
-_PYTYPES = {"int": int, "str": str, "float": float}
-_SQLTYPES = {"int": "INTEGER", "str": "TEXT", "float": "REAL"}
+_NAME_RX = re.compile(r"[a-z][a-z0-9_]*", re.IGNORECASE)
 
 
 def _jsondoc_converter(data):
@@ -25,11 +23,13 @@ def _jsondoc_converter(data):
     else:
         return json.loads(data)
 
+
 def _jsondoc_adapter(jsondoc):
     if jsondoc is None:
         return None
     else:
         return json.dumps(jsondoc, ensure_ascii=False)
+
 
 sqlite3.register_converter("JSONDOC", _jsondoc_converter)
 sqlite3.register_adapter(dict, _jsondoc_adapter)
@@ -39,25 +39,35 @@ class jsondocdbException(Exception):
     "Base class for jsondocdb errors."
     pass
 
+
 class InvalidFileError(jsondocdbException):
     "The SQLite3 file is not a jsondocdb file."
     pass
+
 
 class NoSuchDocumentError(jsondocdbException):
     "The document was not found in the jsondocdb database."
     pass
 
+
 class InTransactionError(jsondocdbException):
     "Operation is invalid while in a transaction."
+
 
 class NotInTransactionError(jsondocdbException):
     "Operation is invalid when not in a transaction."
 
+
 class IndexSpecificationError(jsondocdbException):
     "Index specification is invalid, or index exists already."
 
+
 class IndexUniqueError(jsondocdbException):
     "Index unique constraint was violated."
+
+
+class NoSuchIndexError(jsondocdbException):
+    "There is no such index."
 
 
 class Database:
@@ -74,46 +84,49 @@ class Database:
         sqlite3.connect, except for 'detect_types', which is hard-wired
         to sqlite3.PARSE_DECLTYPES.
         """
-        kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # Handle JSONDOC.
+        kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # To handle JSONDOC.
         self.cnx = sqlite3.connect(filepath, **kwargs)
 
         cursor = self.cnx.cursor()
         cursor = cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         names = [n[0] for n in cursor.fetchall()]
 
-        if names:     # Check that this is a jsondocdb database file.
-            if set(["docs", "indexes", "attachments"]).difference(names):
+        if names:  # Check that this is a jsondocdb database file.
+            if set(["documents", "indexes", "attachments"]).difference(names):
                 raise InvalidFileError
 
-        else:   # Empty; initialize tables required for jsondocdb.
+        else:  # Empty; initialize tables required for jsondocdb.
             cursor.execute(
-                "CREATE TABLE docs"
-                "(docid TEXT PRIMARY KEY,"
-                " doc JSONDOC NOT NULL)")
+                "CREATE TABLE documents"
+                "(identifier TEXT PRIMARY KEY, document JSONDOC NOT NULL)"
+            )
             cursor.execute(
                 "CREATE TABLE indexes"
                 "(name TEXT PRIMARY KEY,"
-                " path TEXT NOT NULL," # The path string, not the Logic document.
-                " keytype TEXT NOT NULL,"
-                " uniq INTEGER NOT NULL," # Avoid conflict with reserved word.
-                " require JSONDOC)"       # Allow NULL.
+                " path TEXT NOT NULL,"  # The path string, not the Logic document.
+                " uniq INTEGER NOT NULL,"  # Avoid conflict with reserved word.
+                " require JSONDOC)"  # Allow NULL.
             )
             cursor.execute(
                 "CREATE TABLE attachments"
-                "(docid TEXT NOT NULL,"  # Foreign key to docs.docid
+                "(identifier TEXT NOT NULL,"  # Foreign key to documents.identifier
                 " name TEXT NOT NULL,"
                 " mimetype TEXT NOT NULL,"
                 " size INTEGER NOT NULL,"
-                " data BLOB NOT NULL)"
+                " content BLOB NOT NULL)"
+            )
+            cursor.execute(
+                "CREATE UNIQUE INDEX attachments_index ON attachments (identifier, name)"
             )
 
-        self.indexes = dict([(row[0], {"path": {"var": row[1]},
-                                       "keytype": row[2],
-                                       "unique": bool(row[3]),
-                                       "require": row[4]})
-                            for row in cursor.execute("SELECT name, path, keytype, uniq, require FROM indexes").fetchall()])
-        for indexdoc in self.indexes.values():
-            indexdoc["pytype"] = _PYTYPES[indexdoc["keytype"]]
+        self._indexes = dict(
+            [
+                (row[0], {"path": row[1], "unique": bool(row[2]), "require": row[3]})
+                for row in cursor.execute(
+                    "SELECT name, path, uniq, require FROM indexes"
+                ).fetchall()
+            ]
+        )
 
     def __str__(self):
         "Return a string with info on number of documents and indexes."
@@ -121,50 +134,80 @@ class Database:
 
     def __iter__(self):
         "Return an iterator over document identifiers in the database."
-        return (row[0] for row in self.cnx.execute("SELECT docid FROM docs ORDER BY docid"))
+        sql = "SELECT identifier FROM documents ORDER BY identifier"
+        return (row[0] for row in self.cnx.execute())
 
     def __len__(self):
         "Return the number of documents in the database."
-        return self.cnx.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
+        return self.cnx.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
 
-    def __getitem__(self, docid):
+    def __getitem__(self, identifier):
         "Return the document with the given identifier."
-        row = self.cnx.execute("SELECT doc FROM docs WHERE docid=?", (docid,)).fetchone()
+        sql = "SELECT document FROM documents WHERE identifier=?"
+        row = self.cnx.execute(sql, (identifier,)).fetchone()
         if not row:
-            raise NoSuchDocumentError(f"No such document '{docid}'.")
+            raise NoSuchDocumentError(f"No such document '{identifier}'.")
         return row[0]
 
-    def __setitem__(self, docid, doc):
+    def __setitem__(self, identifier, document):
         """Add or update the document in the database with the given identifier.
 
         Raises NotInTransactionError
-        Raises ValueError if docid or doc are of invalid type.
+        Raises KeyError if identifier or document are of invalid type.
         """
         if not self.in_transaction:
-            raise NotInTransactionError("Cannot set item when not in transaction.")
-        if not isinstance(docid, str):
-            raise ValueError("'docid' must be an instance of 'str'.")
-        if not isinstance(doc, dict):
-            raise ValueError("'doc' must be an instance of 'dict'.")
+            raise NotInTransactionError(
+                "Cannot add or update document when not in transaction."
+            )
+        if not isinstance(identifier, str):
+            raise KeyError("'identifier' must be an instance of 'str'.")
+        if not isinstance(document, dict):
+            raise KeyError("'document' must be an instance of 'dict'.")
         cursor = self.cnx.cursor()
         try:
-            cursor.execute("INSERT INTO docs (docid, doc) VALUES (?, ?)", (docid, doc))
+            cursor.execute(
+                "INSERT INTO documents (identifier, document) VALUES (?, ?)",
+                (identifier, document),
+            )
         except sqlite3.IntegrityError:
-            cursor.execute("UPDATE docs SET doc=? where docid=?", (doc, docid))
-        for name, indexdoc in self.indexes:
-            pass # XXX Add to indexes.
+            cursor.execute(
+                "UPDATE documents SET document=? where identifier=?",
+                (document, identifier),
+            )
+        # Run through the indexes.
+        for name, indexdoc in self._indexes.items():
+            # First remove if already indexed.
+            cursor.execute(f"DELETE FROM i_{name} WHERE identifier=?", (identifier,))
+            key = Logic({"var": indexdoc["path"]})(document)
+            if key is None:
+                continue
+            if not isinstance(key, (str, int, float)):
+                raise ValueError(
+                    f"Document {identifier}, path {path}, key {key} is not a simple type."
+                )
+            if Logic(indexdoc["require"])(document):
+                try:
+                    cursor.execute(
+                        f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)",
+                        (identifier, key),
+                    )
+                except sqlite3.IntegrityError:
+                    raise IndexUniqueError(
+                        f"Document {identifier}, index {name}, path {path}, key {key} is not unique."
+                    )
 
-    def __delitem__(self, docid):
+    def __delitem__(self, identifier):
         """Delete the document with the given identifier from the database.
 
         Raises NotInTransactionError
         Raises NoSuchDocumentError
         """
-        self.delete(docid)
+        self.delete(identifier)
 
-    def __contains__(self, docid):
+    def __contains__(self, identifier):
         "Return `True` if the given identifier is in the database, else `False`."
-        return bool(self.cnx.execute("SELECT COUNT(*) FROM docs WHERE docid=?", (docid,)).fetchone()[0])
+        sql = "SELECT COUNT(*) FROM documents WHERE identifier=?"
+        return bool(self.cnx.execute(sql, (identifier,)).fetchone()[0])
 
     def __enter__(self):
         """A context manager for a transaction. All operations that modify
@@ -195,7 +238,7 @@ class Database:
         "Are we within a transaction?"
         return self.cnx.in_transaction
 
-    def get(self, docid, default=None):
+    def get(self, identifier, default=None):
         """Return the document with the given identifier.
         If not found, return the 'default'.
         """
@@ -210,29 +253,33 @@ class Database:
 
     def values(self):
         "Return an iterator over all documents in the database."
-        return (row[0] for row in self.cnx.execute("SELECT doc FROM docs ORDER BY id"))
+        sql = "SELECT document FROM documents ORDER BY id"
+        return (row[0] for row in self.cnx.execute(sql))
 
     def items(self):
         "Return an iterator over all tuples (identifier, document) in the database."
-        return ((row[0], row[1]) for row in self.cnx.execute("SELECT docid, doc FROM docs ORDER BY docid"))
+        sql = "SELECT identifier, document FROM documents ORDER BY identifier"
+        return ((row[0], row[1]) for row in self.cnx.execute())
 
-    def delete(self, docid):
+    def delete(self, identifier):
         """Delete the document with the given identifier from the database.
 
         Raises NotInTransactionError
         Raises NoSuchDocumentError
         """
         if not self.in_transaction:
-            raise NotInTransactionError("Cannot delete an item when not in a transaction.")
+            raise NotInTransactionError(
+                "Cannot delete an item when not in a transaction."
+            )
         cursor = self.cnx.cursor()
-        cursor.execute("DELETE FROM docs WHERE docid=?", (docid,))
+        cursor.execute("DELETE FROM documents WHERE identifier=?", (identifier,))
         if cursor.rowcount != 1:
             raise NoSuchDocumentError
-        cursor.execute("DELETE FROM attachments WHERE docid=?", (docid,))
-        for name in self.indexes:
-            cursor.execute(f"DELETE FROM i_{name} WHERE docid=?", (docid,))
+        cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
+        for name in self._indexes:
+            cursor.execute(f"DELETE FROM i_{name} WHERE identifier=?", (identifier,))
 
-    def create_index(self, name, path, keytype, unique, require=None):
+    def create_index(self, name, path, unique=False, require=None):
         """Create an index with the given name to the database.
         All current documents will be indexed, so this might take a while.
 
@@ -241,83 +288,208 @@ class Database:
         If the path yields a list, all elements in the list will be
         included in the index.
 
-        keytype: The type of the index key value. One of the strings (not types!)
-        'str', 'int' or 'float'.
-
         unique: Are the keys in the index required to be unique?
 
-        require: An optional jsonLogic expression. If given, only documents 
-        satisfying the expression are included in the index. 
+        require: An optional jsonLogic expression. If given, only documents
+        satisfying the expression are included in the index.
         """
-        if not _INDEX_NAME_RX.match(name):
-            raise IndexSpecificationError(f"Invalid index name '{name}'.")
-        if name in self.indexes:
+        if not _NAME_RX.match(name):
+            raise InvalidNameError(f"Invalid index name '{name}'.")
+        if name in self._indexes:
             raise IndexSpecificationError(f"Index '{name}' already exists.")
         if not isinstance(path, str):
             raise IndexSpecificationError("Invalid index path; is not a str.")
-        try:
-            sqltype = _SQLTYPES[keytype]
-        except KeyError:
-            raise IndexSpecificationError(f"Invalid index keytype '{keytype}'.")
         unique = bool(unique)
         if require is not None and not isinstance(require, dict):
             raise IndexSpecificationError("Invalid index require; is not a dict.")
         cursor = self.cnx.cursor()
         cursor.execute("BEGIN")
-        try:
-            cursor.execute("INSERT INTO indexes (name, path, keytype, uniq, require) VALUES (?, ?, ?, ?, ?)",
-                           (name, path, keytype, unique, require))
+        try:  # 'uniq' since 'unique' is a reserved word.
+            sql = "INSERT INTO indexes (name, path, uniq, require) VALUES (?, ?, ?, ?)"
+            cursor.execute(sql, (name, path, unique, require))
         except sqlite3.IntegrityError:
             raise IndexSpecificationError
-        else:
-            cursor.execute(f"CREATE TABLE i_{name}"
-                           f"(docid TEXT NOT NULL, value {sqltype} NOT NULL)")
-            cursor.execute(f"CREATE {unique and 'UNIQUE' or ''} INDEX x_{name}"
-                           f" ON i_{name} (value)")
-            # XXX Also index the docid column? Would make delete faster.
-            path = {"var": path}
-            pytype = _PYTYPES[keytype]
-            self.indexes[name] = {"path": path,
-                                  "keytype": keytype,
-                                  "pytype": pytype,
-                                  "unique": unique,
-                                  "require": require}
-            cursor.execute("SELECT docid, doc FROM docs")
-            path = Logic(path)
-            if require:
-                require = Logic(require)
-            for docid, doc in cursor.fetchall():
-                value = path(doc)
-                if value is not None:
-                    if not isinstance(value, pytype):
-                        raise ValueError(f"path value {value} is not of keytype '{keytype}'.")
-                    if not require or require(doc):
-                        try:
-                            self.cnx.execute(f"INSERT INTO i_{name} (docid, value) VALUES (?, ?)", (docid, value))
-                        except sqlite3.IntegrityError:
-                            raise IndexUniqueError
+        # This relies on Sqlite3 peculiar take on column type.
+        sql = f"CREATE TABLE i_{name} (identifier TEXT NOT NULL, key INTEGER NOT NULL)"
+        cursor.execute(sql)
+        cursor.execute(f"CREATE INDEX xi_{name} ON i_{name} (identifier)")
+        cursor.execute(
+            f"CREATE {unique and 'UNIQUE' or ''} INDEX xv_{name} ON i_{name} (key)"
+        )
+        self._indexes[name] = {"path": path, "unique": unique, "require": require}
+        cursor.execute("SELECT identifier, document FROM documents")
+        pathlogic = Logic({"var": path})
+        requirelogic = Logic(require)
+        for identifier, document in cursor.fetchall():
+            key = pathlogic(document)
+            if key is None:
+                continue
+            if not isinstance(key, (str, int, float)):
+                raise ValueError(
+                    f"Document {identifier}, path {path}, key {key} is not a simple type."
+                )
+            if requirelogic(document):
+                try:
+                    sql = f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)"
+                    cursor.execute(sql, (identifier, key))
+                except sqlite3.IntegrityError:
+                    raise IndexUniqueError(
+                        f"Document {identifier}, index {name}, path {path}, key {key} is not unique."
+                    )
         cursor.execute("COMMIT")
 
     def delete_index(self, name):
-        "Delete the named index."
+        """Delete the named index.
+
+        Raises InTransactionError
+        Raises NoSuchIndexError
+        """
+        if self.in_transaction:
+            raise InTransactionError(
+                "Cannot delete an index while within a transaction."
+            )
         try:
-            self.indexes.pop(name)
+            self._indexes.pop(name)
         except KeyError:
-            raise IndexSpecificationError(f"No such index '{name}'.")
+            raise NoSuchIndexError
         else:
             cursor = self.cnx.cursor()
             cursor.execute("BEGIN")
-            cursor.execute(f"DROP TABLE i_{name}")
-            cursor.execute(f"DROP INDEX x_{name}")
+            cursor.execute("DELETE FROM indexes WHERE name=?", (name,))
             cursor.execute("COMMIT")
+            cursor.execute(f"DROP TABLE i_{name}")
 
     def is_index(self, name):
         "Is there an index with the given name?"
-        return name in self.indexes
+        return name in self._indexes
+
+    def lookup(self, name, key):
+        """Get the document identifiers in the named index having the given key.
+
+        Raises NoSuchIndexError
+        """
+        if not self.is_index(name):
+            raise NoSuchIndexError
+        sql = f"SELECT identifier FROM i_{name} WHERE key=?"
+        return (row[0] for row in self.cnx.execute(sql, (key,)))
+
+    def lookup_documents(self, name, key):
+        """Get the tuples (identifier, document) in the named index
+        having the given key.
+
+        Raises NoSuchIndexError
+        """
+        if not self.is_index(name):
+            raise NoSuchIndexError
+        sql = f"SELECT i.identifier, d.document FROM i_{name} AS i, documents AS d WHERE key=? AND i.identifier=d.identifier"
+        return ((row[0], row[1]) for row in self.cnx.execute(sql, (key,)))
+
+    def range(self, name, low=None, high=None, reverse=False):
+        """Return an iterator over tuples (identifier, key) in the
+        named index given low (inclusive) and high (exclusive) bounds.
+
+        Raises NoSuchIndexError
+        """
+        if not self.is_index(name):
+            raise NoSuchIndexError
+        sql = f"SELECT identifier, key FROM i_{name}"
+        if low is None:
+            comparison = []
+            keys = []
+        else:
+            comparison = ["key >= ?"]
+            keys = [low]
+        if high is not None:
+            comparison.append("key < ?")
+            keys.append(high)
+        if comparison:
+            sql += " WHERE "
+            if len(comparison) == 2:
+                sql += " AND ".join(comparison)
+            else:
+                sql += comparison[0]
+        if reverse:
+            sql += " ORDER BY key DESC"
+        else:
+            sql += " ORDER BY key ASC"
+        return ((row[0], row[1]) for row in self.cnx.execute(sql, keys))
+
+    def range_documents(self, name, low=None, high=None, reverse=False):
+        """Return an iterator over tuples (identifier, document, key) in the
+        named index given given low (inclusive) and high (exclusive) bounds.
+
+        Raises NoSuchIndexError
+        """
+        if not self.is_index(name):
+            raise NoSuchIndexError
+        sql = f"SELECT i.identifier, d.document, i.key FROM i_{name} AS i, documents AS d WHERE i.identifier = d.identifier"
+        if low is None:
+            comparison = []
+            keys = []
+        else:
+            comparison = ["i.key >= ?"]
+            keys = [low]
+        if high is not None:
+            comparison.append("i.key < ?")
+            keys.append(high)
+        if comparison:
+            sql += " AND "
+            if len(comparison) == 2:
+                sql += " AND ".join(comparison)
+            else:
+                sql += comparison[0]
+        if reverse:
+            sql += " ORDER BY i.key DESC"
+        else:
+            sql += " ORDER BY i.key ASC"
+        return ((row[0], row[1], row[2]) for row in self.cnx.execute(sql, keys))
 
     def get_indexes(self):
-        "Return the list of names for the current indexes."
-        return list(self.indexes)
+        "Return a copy of the information about all current indexes."
+        return self._indexes.copy()
+
+    def put_attachment(self, identifier, name, mimetype, content):
+        """Add the given attachment to the document. Overwrites the attachment
+        if it already exists.
+
+        Raises NotInTransactionError
+        Raises NoSuchDocumentError
+        """
+        if not self.in_transaction:
+            raise NotInTransactionError(
+                "Cannot put attachment when not in transaction."
+            )
+        if not identifier in self:
+            raise NoSuchDocumentError
+        if not _NAME_RX.match(name):
+            raise InvalidNameError(f"Invalid attachment name '{name}'.")
+        if not content:
+            raise ValueError("No attachment content.")
+        if not isinstance(content, bytes):
+            raise TypeError("Attachment contents must be bytes.")
+        cursor = self.cnx.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO attachments (identifier, name, mimetype, size, content) VALUES (?, ?, ?, ?, ?)",
+                (identifier, name, mimetype, len(content), content),
+            )
+        except sqlite3.IntegrityError:
+            cursor.execute(
+                "UPDATE attachments SET mimetype=?, size=?, content=? WHERE identifier=? AND name=?",
+                (mimetype, len(content), content, identifier, name),
+            )
+
+    def get_attachments(self, identifier):
+        "Get the information, but not the content, of all attachments for the document."
+        raise NotImplemented
+
+    def get_attachment(self, identifier, name):
+        "Return a dictionary containing the named attachment for the document."
+        raise NotImplemented
+
+    def delete_attachment(self, identifier, name):
+        "Delete the named attachment for the document."
+        raise NotImplemented
 
     def count_documents(self):
         "Return the number of documents in the database."
@@ -332,7 +504,6 @@ class Database:
         return self.cnx.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
 
 
-
 class Logic:
     """Implementation of JsonLogic https://jsonlogic.com/
 
@@ -341,7 +512,6 @@ class Logic:
 
     def __init__(self, expression):
         self.expression = expression or {}
-
 
     @staticmethod
     def if_(*args):
@@ -354,16 +524,14 @@ class Logic:
         else:
             return None
 
-
     @staticmethod
     def soft_equals(a, b):
-        """Implements the '==' operator, which does type JS-style coertion."""
+        """Implements the '==' operator, which does type JS-style coercion."""
         if isinstance(a, str) or isinstance(b, str):
             return str(a) == str(b)
         if isinstance(a, bool) or isinstance(b, bool):
             return bool(a) is bool(b)
         return a == b
-
 
     @staticmethod
     def hard_equals(a, b):
@@ -372,10 +540,9 @@ class Logic:
             return False
         return a == b
 
-
     @staticmethod
     def less(a, b, *args):
-        """Implements the '<' operator with JS-style type coertion."""
+        """Implements the '<' operator with JS-style type coercion."""
         types = set([type(a), type(b)])
         if float in types or int in types:
             try:
@@ -385,14 +552,12 @@ class Logic:
                 return False
         return a < b and (not args or less(b, *args))
 
-
     @staticmethod
     def less_or_equal(a, b, *args):
-        """Implements the '<=' operator with JS-style type coertion."""
-        return (
-            less(a, b) or soft_equals(a, b)
-        ) and (not args or less_or_equal(b, *args))
-
+        """Implements the '<=' operator with JS-style type coercion."""
+        return (less(a, b) or soft_equals(a, b)) and (
+            not args or less_or_equal(b, *args)
+        )
 
     @staticmethod
     def to_numeric(arg):
@@ -401,7 +566,7 @@ class Logic:
         This is important, because e.g. {"!==": [{"+": "0"}, 0.0]}
         """
         if isinstance(arg, str):
-            if '.' in arg:
+            if "." in arg:
                 return float(arg)
             else:
                 return int(arg)
@@ -412,14 +577,12 @@ class Logic:
         """Sum converts either to ints or to floats."""
         return sum(to_numeric(arg) for arg in args)
 
-
     @staticmethod
     def minus(*args):
         """Also, converts either to ints or to floats."""
         if len(args) == 1:
             return -to_numeric(args[0])
         return to_numeric(args[0]) - to_numeric(args[1])
-
 
     @staticmethod
     def merge(*args):
@@ -432,12 +595,11 @@ class Logic:
                 ret.append(arg)
         return ret
 
-
     @staticmethod
     def get_var(data, var_name, not_found=None):
         """Gets variable value from data dictionary."""
         try:
-            for key in str(var_name).split('.'):
+            for key in str(var_name).split("."):
                 try:
                     data = data[key]
                 except TypeError:
@@ -446,7 +608,6 @@ class Logic:
             return not_found
         else:
             return data
-
 
     @staticmethod
     def missing(data, *args):
@@ -459,7 +620,6 @@ class Logic:
             if get_var(data, arg, not_found) is not_found:
                 ret.append(arg)
         return ret
-
 
     @staticmethod
     def missing_some(data, min_required, args):
@@ -478,7 +638,6 @@ class Logic:
                     return []
         return ret
 
-
     operations = {
         "==": soft_equals,
         "===": hard_equals,
@@ -491,14 +650,20 @@ class Logic:
         "!": lambda a: not a,
         "!!": bool,
         "%": lambda a, b: a % b,
-        "and": lambda *args: functools.reduce(lambda total, arg: total and arg, args, True),
-        "or": lambda *args: functools.reduce(lambda total, arg: total or arg, args, False),
+        "and": lambda *args: functools.reduce(
+            lambda total, arg: total and arg, args, True
+        ),
+        "or": lambda *args: functools.reduce(
+            lambda total, arg: total or arg, args, False
+        ),
         "?:": lambda a, b, c: b if a else c,
         "if": if_,
         "in": lambda a, b: a in b if "__contains__" in dir(b) else False,
         "cat": lambda *args: "".join(str(arg) for arg in args),
         "+": plus,
-        "*": lambda *args: functools.reduce(lambda total, arg: total * float(arg), args, 1),
+        "*": lambda *args: functools.reduce(
+            lambda total, arg: total * float(arg), args, 1
+        ),
         "-": minus,
         "/": lambda a, b=None: a if b is None else float(a) / float(b),
         "min": lambda *args: min(args),
@@ -507,11 +672,15 @@ class Logic:
         "count": lambda *args: sum(1 if a else 0 for a in args),
     }
 
-
     def __call__(self, data):
-        "Does the given data satisfy the expression?"
-        return self.apply(self.expression, data)
-        
+        """Does the given data satisfy the expression?
+        If there is no expression, the trivially True.
+        """
+        if self.expression:
+            return self.apply(self.expression, data)
+        else:
+            return True
+
     def apply(self, expression, data):
         """Executes the json-logic with given data."""
         # You've recursed to a primitive, stop!
@@ -531,11 +700,11 @@ class Logic:
         # Recursion!
         values = [self.apply(val, data) for val in values]
 
-        if operator == 'var':
+        if operator == "var":
             return self.get_var(data, *values)
-        if operator == 'missing':
+        if operator == "missing":
             return self.missing(data, *values)
-        if operator == 'missing_some':
+        if operator == "missing_some":
             return self.missing_some(data, *values)
 
         try:
@@ -547,15 +716,23 @@ class Logic:
 if __name__ == "__main__":
     db = Database("test.db")
     with db:
-        db["b"] = {"num": 2, "c":3, "d": [1,2,3]}
+        db["b"] = {"num": 2, "c": 3, "d": [1, 2, 3]}
         db["x"] = {"erty": "apa"}
 
-    if not db.is_index("some"):
-        db.create_index("some", "num", "int", False)
+    try:
+        db.create_index("some", "num")
         print("created index 'some'")
-    # else:
-    #     db.delete_index("some")
-    #     print("deleted index 'some'")
+        db.create_index("content", "content")
+        print("created index 'content'")
+    except IndexSpecificationError:
+        db.delete_index("some")
+        print("deleted index 'some'")
+        db.delete_index("content")
+        print("deleted index 'content'")
 
     with db:
-        db["y"] = {"num": 2, "stuff": "blopp"}
+        for i in range(100):
+            db[f"d{i}"] = {"num": i, "content": f"Some string with a number {2*i}."}
+
+    # print(list(db.range_documents("some", 2.1, 5.1)))
+    print(list(db.lookup_documents("some", 2)))
