@@ -1,6 +1,6 @@
 """jsondocdb
 
-Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic.
+A JSON document Sqlite3 database with Mongo-ish indexes using JsonLogic in Python.
 
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
@@ -10,6 +10,7 @@ __version__ = "1.0.0"
 
 import functools
 import json
+import mimetypes
 import re
 import sqlite3
 
@@ -79,7 +80,7 @@ class Database:
                 "CREATE TABLE attachments"
                 "(identifier TEXT NOT NULL,"  # Foreign key to documents.identifier
                 " name TEXT NOT NULL,"
-                " mimetype TEXT NOT NULL,"
+                " content_type TEXT NOT NULL,"
                 " size INTEGER NOT NULL,"
                 " content BLOB NOT NULL)"
             )
@@ -452,6 +453,7 @@ class Database:
         """
         if not self.is_index(name):
             raise NoSuchIndexError(f"No such index '{name}'.")
+
         sql = f"SELECT COUNT(*) FROM i_{name}"
         if low is None:
             comparison = []
@@ -470,9 +472,10 @@ class Database:
                 sql += comparison[0]
         return self.cnx.execute(sql, keys).fetchone()[0]
 
-    def put_attachment(self, identifier, name, mimetype, content):
-        """Add the given attachment to the document. Overwrites the attachment
-        if it already exists.
+    def put_attachment(self, identifier, name, content, content_type=None):
+        """Add the given attachment to the document.
+        The content_type is guessed from the name, if not given explicitly.
+        Overwrites the attachment if it already exists.
 
         Raises NotInTransactionError
         Raises NoSuchDocumentError
@@ -485,16 +488,19 @@ class Database:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
         if not isinstance(content, bytes):
             raise TypeError("Attachment contents must be bytes.")
+
+        if content_type is None:
+            content_type = mimetypes.guess_type(name)[0]
         cursor = self.cnx.cursor()
         try:
             cursor.execute(
-                "INSERT INTO attachments (identifier, name, mimetype, size, content) VALUES (?, ?, ?, ?, ?)",
-                (identifier, name, mimetype, len(content), content),
+                "INSERT INTO attachments (identifier, name, content_type, size, content) VALUES (?, ?, ?, ?, ?)",
+                (identifier, name, content_type, len(content), content),
             )
         except sqlite3.IntegrityError:
             cursor.execute(
-                "UPDATE attachments SET mimetype=?, size=?, content=? WHERE identifier=? AND name=?",
-                (mimetype, len(content), content, identifier, name),
+                "UPDATE attachments SET content_type=?, size=?, content=? WHERE identifier=? AND name=?",
+                (content_type, len(content), content, identifier, name),
             )
 
     def get_attachments(self, identifier):
@@ -506,8 +512,8 @@ class Database:
         """
         if identifier not in self:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        sql = "SELECT name, mimetype, size FROM attachments WHERE identifier=?"
-        return dict([(row[0], {"mimetype": row[1], "size": row[2]})
+        sql = "SELECT name, content_type, size FROM attachments WHERE identifier=?"
+        return dict([(row[0], {"content_type": row[1], "size": row[2]})
                      for row in self.cnx.execute(sql, (identifier,)).fetchall()])
 
     def get_attachment(self, identifier, name):
@@ -519,13 +525,13 @@ class Database:
         """
         if identifier not in self:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        sql = "SELECT mimetype, size, content FROM attachments WHERE identifier=? AND name=?"
+        sql = "SELECT content_type, size, content FROM attachments WHERE identifier=? AND name=?"
         rows = self.cnx.execute(sql, (identifier, name)).fetchall()
         if not rows:
             raise NoSuchAttachmentError(f"No such attachment '{identifier}' '{name}'.")
         return {"identifier": identifier,
                 "name": name,
-                "mimetype": rows[0][0],
+                "content_type": rows[0][0],
                 "size": rows[0][1],
                 "content": rows[0][2]}
 
@@ -540,6 +546,7 @@ class Database:
             raise NotInTransactionError(
                 "Cannot delete an item when not in a transaction."
             )
+
         if identifier not in self:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
         cursor = self.cnx.cursor()
@@ -771,12 +778,12 @@ class InvalidFileError(jsondocdbException):
     pass
 
 
-class NoSuchDocumentError(jsondocdbException):
+class NoSuchDocumentError(jsondocdbException, KeyError):
     "The document was not found in the jsondocdb database."
     pass
 
 
-class NoSuchAttachmentError(jsondocdbException):
+class NoSuchAttachmentError(jsondocdbException, KeyError):
     "The attachment was not found in the jsondocdb database."
     pass
 
@@ -797,5 +804,5 @@ class IndexUniqueError(jsondocdbException):
     "Index unique constraint was violated."
 
 
-class NoSuchIndexError(jsondocdbException):
+class NoSuchIndexError(jsondocdbException, KeyError):
     "There is no such index."

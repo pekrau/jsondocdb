@@ -65,7 +65,7 @@ def undump(filepath, db):
                 # An attachment follows its document.
                 a = atts.pop(item.name)
                 with db:
-                    db.put_attachment(doc["_id"], a["filename"], a["content_type"], itemdata)
+                    db.put_attachment(doc["_id"], a["filename"], itemdata, a["content_type"])
                 nfiles += 1
             else:
                 doc = json.loads(itemdata.decode("utf-8"))
