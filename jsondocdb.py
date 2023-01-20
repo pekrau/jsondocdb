@@ -1,11 +1,12 @@
 """jsondocdb
 
-A JSON document Sqlite3 database with Mongo-ish indexes using JsonLogic in Python.
+A Python Sqlite3 database for JSON documents. Simple indexing inspired by
+MongoDB and CouchDB.
 
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 import functools
@@ -37,7 +38,9 @@ sqlite3.register_adapter(dict, _jsondoc_adapter)
 
 
 class Database:
-    "Simple JSON document database with indexes; Python, Sqlite3 and JsonLogic."
+    """A Python Sqlite3 database for JSON documents. Simple indexing inspired by
+    MongoDB and CouchDB.
+    """
 
     def __init__(self, filepath, readonly=False, **kwargs):
         """Open or create the database file.
@@ -72,7 +75,7 @@ class Database:
             cursor.execute(
                 "CREATE TABLE indexes"
                 "(name TEXT PRIMARY KEY,"
-                " path TEXT NOT NULL,"  # The path string, not the JsonLogic document.
+                " keypath TEXT NOT NULL,"
                 " uniq INTEGER NOT NULL,"  # Avoid conflict with reserved word.
                 " require JSONDOC)"  # Allow NULL.
             )
@@ -90,9 +93,11 @@ class Database:
 
         self._indexes = dict(
             [
-                (row[0], {"path": row[1], "unique": bool(row[2]), "require": row[3]})
+                (row[0], {"keypath": row[1],
+                          "unique": bool(row[2]),
+                          "require": row[3]})
                 for row in cursor.execute(
-                    "SELECT name, path, uniq, require FROM indexes"
+                    "SELECT name, keypath, uniq, require FROM indexes"
                 ).fetchall()
             ]
         )
@@ -128,6 +133,7 @@ class Database:
 
         Raises NotInTransactionError
         Raises KeyError if identifier or document are of invalid type.
+        Raises ValueError if a key value is not a simple type, or list of simple types.
         """
         if not self.in_transaction:
             raise NotInTransactionError(
@@ -148,29 +154,14 @@ class Database:
                 "UPDATE documents SET document=? where identifier=?",
                 (document, identifier),
             )
-        # Run through the indexes.
+        # Run through the indexes. Remove document from each index before adding it.
         for name, indexdoc in self._indexes.items():
-            # First remove document entries if already indexed.
             cursor.execute(f"DELETE FROM i_{name} WHERE identifier=?", (identifier,))
-            # Should the document be included in this index?
-            if JsonLogic(indexdoc["require"])(document):
-                path = indexdoc["path"]
-                key = JsonLogic({"var": path})(document)
-                if key is None:
-                    continue
-                if not isinstance(key, (str, int, float)):
-                    raise ValueError(
-                        f"Index {name}, path {path}: key is not a simple type in document {identifier}."
-                    )
-                try:
-                    cursor.execute(
-                        f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)",
-                        (identifier, key),
-                    )
-                except sqlite3.IntegrityError:
-                    raise IndexUniqueError(
-                        f"Document {identifier}, index {name}, path {path}, key {key} is not unique."
-                    )
+            self._add_to_index(identifier,
+                               document,
+                               name,
+                               JsonLogic({"var": indexdoc["keypath"]}),
+                               JsonLogic(indexdoc["require"]))
 
     def __delitem__(self, identifier):
         """Delete the document with the given identifier from the database.
@@ -262,16 +253,16 @@ class Database:
         "Return the number of documents in the database."
         return len(self)
 
-    def create_index(self, name, path, unique=False, require=None):
+    def create_index(self, name, keypath, unique=False, require=None):
         """Create an index with the given name to the database.
         All current documents will be indexed, so this might take a while.
 
-        path: The path in the data JSON document to index.
-        If the path yields None, the document is not included in the index.
-        If the path yields a list, all elements in the list will be
-        included in the index.
+        keypath: The path in the data JSON document to index.
+        If the keypath yields None, the document is not included in the index.
+        If the keypath yields a list, all elements in the list will be
+        included in separate entries in the index.
 
-        unique: Are the keys in the index required to be unique?
+        unique: The keys in the index must be unique, or not.
 
         require: An optional jsonLogic expression. If given, only documents
         satisfying the expression are included in the index.
@@ -280,16 +271,16 @@ class Database:
             raise IndexSpecificationError(f"Invalid index name '{name}'.")
         if name in self._indexes:
             raise IndexSpecificationError(f"Index '{name}' already exists.")
-        if not isinstance(path, str):
-            raise IndexSpecificationError("Invalid index path; is not a str.")
+        if not isinstance(keypath, str):
+            raise IndexSpecificationError("Invalid keypath; is not a str.")
         unique = bool(unique)
         if require is not None and not isinstance(require, dict):
             raise IndexSpecificationError("Invalid index require; is not a dict.")
         cursor = self.cnx.cursor()
         cursor.execute("BEGIN")
         try:  # 'uniq' since 'unique' is a reserved word.
-            sql = "INSERT INTO indexes (name, path, uniq, require) VALUES (?, ?, ?, ?)"
-            cursor.execute(sql, (name, path, unique, require))
+            sql = "INSERT INTO indexes (name, keypath, uniq, require) VALUES (?, ?, ?, ?)"
+            cursor.execute(sql, (name, keypath, unique, require))
         except sqlite3.IntegrityError:
             raise IndexSpecificationError
         # This relies on Sqlite3 peculiar take on column type.
@@ -299,27 +290,40 @@ class Database:
         cursor.execute(
             f"CREATE {unique and 'UNIQUE' or ''} INDEX xv_{name} ON i_{name} (key)"
         )
-        self._indexes[name] = {"path": path, "unique": unique, "require": require}
+        self._indexes[name] = {"keypath": keypath, "unique": unique, "require": require}
         cursor.execute("SELECT identifier, document FROM documents")
-        pathlogic = JsonLogic({"var": path})
+        keypathlogic = JsonLogic({"var": keypath})
         requirelogic = JsonLogic(require)
         for identifier, document in cursor.fetchall():
-            if requirelogic(document):
-                key = pathlogic(document)
-                if key is None:
-                    continue
-                if not isinstance(key, (str, int, float)):
-                    raise ValueError(
-                        f"Document {identifier}, path {path}, key {key} is not a simple type."
-                    )
-                try:
-                    sql = f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)"
-                    cursor.execute(sql, (identifier, key))
-                except sqlite3.IntegrityError:
-                    raise IndexUniqueError(
-                        f"Document {identifier}, index {name}, path {path}, key {key} is not unique."
-                    )
+            self._add_to_index(identifier, document, name, keypathlogic, requirelogic)
         cursor.execute("COMMIT")
+
+    def _add_to_index(self, identifier, document, name, keypathlogic, requirelogic):
+        if not requirelogic.apply(document): return
+        key = keypathlogic.apply(document)
+        if key is None: return
+        try:
+            if isinstance(key, (str, int, float)):
+                keys = [key]
+            elif isinstance(key, list):
+                keys = key
+                for key in keys:
+                    if not isinstance(key, (str, int, float)):
+                        raise ValueError
+            else:
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                f"Document {identifier}, keypath {keypathlogic.expression.var}, key {key} is not a simple type, or list of simple types."
+            )
+        for key in keys:
+            try:
+                sql = f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)"
+                self.cnx.execute(sql, (identifier, key))
+            except sqlite3.IntegrityError:
+                raise IndexUniqueError(
+                    f"Document {identifier}, index {name}, keypath {keypath}, key {key} is not unique."
+                )
 
     def delete_index(self, name):
         """Delete the named index.
@@ -727,16 +731,16 @@ class JsonLogic:
         "count": lambda *args: sum(1 if a else 0 for a in args),
     }
 
-    def __call__(self, data):
+    def apply(self, data):
         """Does the given data satisfy the expression?
-        If there is no expression, the trivially True.
+        If the expression is empty, then trivially True.
         """
         if self.expression:
-            return self.apply(self.expression, data)
+            return self._apply(self.expression, data)
         else:
             return True
 
-    def apply(self, expression, data):
+    def _apply(self, expression, data):
         """Executes the json-logic with given data."""
         # You've recursed to a primitive, stop!
         if expression is None or not isinstance(expression, dict):
@@ -753,7 +757,7 @@ class JsonLogic:
             values = [values]
 
         # Recursion!
-        values = [self.apply(val, data) for val in values]
+        values = [self._apply(val, data) for val in values]
 
         if operator == "var":
             return self.get_var(data, *values)
@@ -778,12 +782,12 @@ class InvalidFileError(jsondocdbException):
     pass
 
 
-class NoSuchDocumentError(jsondocdbException, KeyError):
+class NoSuchDocumentError(jsondocdbException):
     "The document was not found in the jsondocdb database."
     pass
 
 
-class NoSuchAttachmentError(jsondocdbException, KeyError):
+class NoSuchAttachmentError(jsondocdbException):
     "The attachment was not found in the jsondocdb database."
     pass
 
@@ -804,5 +808,5 @@ class IndexUniqueError(jsondocdbException):
     "Index unique constraint was violated."
 
 
-class NoSuchIndexError(jsondocdbException, KeyError):
+class NoSuchIndexError(jsondocdbException):
     "There is no such index."
