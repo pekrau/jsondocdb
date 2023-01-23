@@ -5,7 +5,7 @@ A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic.
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "1.2.0"
+__version__ = "0.9.0"
 
 
 import functools
@@ -272,7 +272,7 @@ class Database:
         in the database.
         """
         sql = "SELECT identifier, document FROM documents ORDER BY identifier"
-        return (tuple(row) for row in self.cnx.execute())
+        return (tuple(row) for row in self.cnx.execute(sql))
 
     def delete(self, identifier):
         """Delete the document with the given identifier from the database.
@@ -304,9 +304,10 @@ class Database:
             raise IndexSpecificationError(f"Index '{name}' already exists.")
         if not isinstance(keypath, str):
             raise IndexSpecificationError("Invalid keypath; is not a str.")
-        unique = bool(unique)
         if require is not None and not isinstance(require, dict):
             raise IndexSpecificationError("Invalid index require; is not a dict.")
+
+        unique = bool(unique)
         cursor = self.cnx.cursor()
         cursor.execute("BEGIN")
         try:  # 'uniq' since 'unique' is a reserved word.
@@ -601,6 +602,40 @@ class Database:
     def attachment_count(self):
         "Return the number of attachments in the database."
         return self.cnx.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
+
+
+class Index:
+    "Interface to the named index in the database."
+
+    def __init__(self, db, name):
+        self.db = db
+        self.name = name
+        row = self.db.cnx.execute("SELECT keypath, uniq, require FROM indexes WHERE name=?", (name,)).fetchone()
+        if row:
+            self.keypath = row[0]
+            self.unique = bool(row[1])
+            self.require = row[2]
+        else:
+            self.keypath = None
+            self.unique = False
+            self.require = None
+
+    def create(self, keypath, unique=False, require=None):
+        """Create this index in the database.
+
+        'keypath': The path in the data JSON document to index.
+        If the keypath yields None, the document is not included in the index.
+        If the keypath yields a list, all elements in the list will be
+        included in separate entries in the index.
+
+        'unique': The keys in the index must be unique, or not.
+
+        'require': An optional jsonLogic expression. If given, only documents
+        satisfying the expression are included in the index.
+
+        Raises TransactionError if within a transaction.
+        """
+        pass
 
 
 class JsonLogic:

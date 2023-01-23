@@ -1,4 +1,4 @@
-from jsondocdb import Database, IndexSpecificationError
+from jsondocdb import Database, Index, IndexSpecificationError, NoSuchIndexError
 
 db = Database("test.db")
 with db:
@@ -19,6 +19,10 @@ except NoSuchIndexError:
 
 db.create_index("some", "num")
 print("created index 'some'")
+
+idx = Index(db, "some")
+print(idx.keypath, idx.unique, idx.require)
+
 db.create_index("content", "content")
 print("created index 'content'")
 print(db.lookup_count("content", "blopp"), "key 'blopp' in index 'content'")

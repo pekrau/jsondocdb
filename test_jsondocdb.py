@@ -19,6 +19,21 @@ def db():
     db.close()
     os.remove(dbfile.name)
 
+@pytest.fixture
+def db_with_docs():
+    dbfile = tempfile.NamedTemporaryFile(delete=False)
+    dbfile.close()
+    db = jsondocdb.Database(dbfile.name)
+    with db:
+        db["first document"] = dict(a=1, b="two", c="III")
+        db["second"] = dict(a=2, text="Some text.")
+        db["third"] = dict(a=3, text="Another text.", d=True)
+        db[uuid.uuid4().hex] = dict(a=19, text="Further along.",
+                                    x={"lkla": 234,"q": [1,2]})
+    yield db
+    db.close()
+    os.remove(dbfile.name)
+
 def test_create_db_file():
     dbfile = tempfile.NamedTemporaryFile(delete=False)
     dbfile.close()
@@ -136,3 +151,10 @@ def test_several_docs(db):
     for i in range(16, 18):
         docid = f"myname{i}"
         assert docid not in db
+
+def test_create_index(db_with_docs):
+    assert len(db) == 4
+    x = db.index("first_index").create("a", unique=True)
+    assert len(x) == 4
+    docid = x[2]
+    assert docid == "second"
