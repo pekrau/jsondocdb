@@ -5,7 +5,7 @@ A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic.
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 import functools
@@ -50,17 +50,40 @@ class Database:
 
         The filepath and any additional keyword arguments are passed  to
         sqlite3.connect, except for 'detect_types', which is hard-wired
-        to sqlite3.PARSE_DECLTYPES.
+        to sqlite3.PARSE_DECLTYPES, and 'isolation_level' which is set to None.
         """
+        self.open(filepath, readonly=readonly, **kwargs)
+
+    def open(self, filepath, readonly=False, **kwargs):
+        """Open or create the database file.
+
+        If the file exists, checks that it has the tables appropriate for jsondocdb.
+
+        If the file is created, creates the required tables.
+
+        The 'filepath' and any additional keyword arguments are passed  to
+        sqlite3.connect, except for:
+        - 'detect_types', which is hard-wired to sqlite3.PARSE_DECLTYPES
+        - 'isolation_level' which is set to None, i.e. explicit transactions.
+
+        'readonly' is a flag that thinly wraps the SQLite3 way of doing read-only.
+        """
+        if hasattr(self, 'cnx'):
+            raise ConnectionError("There is already an open connection.")
+
         kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # To handle JSONDOC.
+        kwargs["isolation_level"] = None                  # Explicit transactions.
         if readonly:
             filepath = f"file:{filepath}?mode=ro"
             kwargs["uri"] = True
-        self.cnx = sqlite3.connect(filepath, **kwargs)
 
-        cursor = self.cnx.cursor()
-        cursor = cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        names = [n[0] for n in cursor.fetchall()]
+        try:
+            self.cnx = sqlite3.connect(filepath, **kwargs)
+            cursor = self.cnx.cursor()
+            cursor = cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            names = [n[0] for n in cursor.fetchall()]
+        except sqlite3.DatabaseError as error:
+            raise InvalidFileError(str(error))
 
         if names:  # Check that this is a jsondocdb database file.
             if set(["documents", "indexes", "attachments"]).difference(names):
@@ -101,14 +124,25 @@ class Database:
             ]
         )
 
+    def close(self):
+        "Close the connection to the database."
+        if not hasattr(self, "cnx"):
+            raise ConnectionError("There is no open connection.")
+
+        self.cnx.close()
+        del self.cnx
+        self._indexes.clear()
+
     def __str__(self):
         "Return a string with info on number of documents and indexes."
         return f"jsondocdb {__version__}: {len(self)} documents, {self.index_count()} indexes, {self.attachment_count()} attachments."
 
     def __iter__(self):
-        "Return an iterator over document identifiers in the database."
+        """Return an iterator (generator, actually) over document identifiers
+        in the database.
+        """
         sql = "SELECT identifier FROM documents ORDER BY identifier"
-        return (row[0] for row in self.cnx.execute())
+        return (row[0] for row in self.cnx.execute(sql))
 
     def __len__(self):
         "Return the number of documents in the database."
@@ -130,18 +164,17 @@ class Database:
     def __setitem__(self, identifier, document):
         """Add or update the document in the database with the given identifier.
 
-        Raises NotInTransactionError
-        Raises KeyError if identifier or document are of invalid type.
+        Raises TransactionError if not within a transaction.
+        Raises TypeError if identifier or document are of invalid type.
         Raises ValueError if a key value is not a simple type, or list of simple types.
         """
         if not self.in_transaction:
-            raise NotInTransactionError(
-                "Cannot add or update document when not in transaction."
-            )
+            raise TransactionError("Add or update must be within a transaction.")
         if not isinstance(identifier, str):
-            raise KeyError("'identifier' must be an instance of 'str'.")
+            raise TypeError("'identifier' must be an instance of 'str'.")
         if not isinstance(document, dict):
-            raise KeyError("'document' must be an instance of 'dict'.")
+            raise TypeError("'document' must be an instance of 'dict'.")
+
         cursor = self.cnx.cursor()
         try:
             cursor.execute(
@@ -165,10 +198,19 @@ class Database:
     def __delitem__(self, identifier):
         """Delete the document with the given identifier from the database.
 
-        Raises NotInTransactionError
+        Raises TransactionError if not within a transaction.
         Raises NoSuchDocumentError
         """
-        self.delete(identifier)
+        if not self.in_transaction:
+            raise TransactionError("Delete must be within a transaction.")
+
+        cursor = self.cnx.cursor()
+        cursor.execute("DELETE FROM documents WHERE identifier=?", (identifier,))
+        if cursor.rowcount != 1:
+            raise NoSuchDocumentError(f"No such document '{identifier}'.")
+        cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
+        for name in self._indexes:
+            cursor.execute(f"DELETE FROM i_{name} WHERE identifier=?", (identifier,))
 
     def __enter__(self):
         """A context manager for a transaction. All operations that modify
@@ -176,10 +218,10 @@ class Database:
         If all goes well, the transaction is committed.
         If an error occurs within the context block, the transaction is rolled back.
 
-        Raises InTransactionError, if already within a transaction.
+        Raises TransactionError if already within a transaction.
         """
         if self.in_transaction:
-            raise InTransactionError("Already within a transaction.")
+            raise TransactionError("Already within a transaction.")
         self.cnx.execute("BEGIN")
 
     def __exit__(self, type, value, tb):
@@ -211,60 +253,50 @@ class Database:
     def put(self, identifier, document):
         """Add or update the document in the database with the given identifier.
 
-        Raises NotInTransactionError
-        Raises KeyError if identifier or document are of invalid type.
+        Raises TransactionError if not within a transaction.
+        Raises TypeError if identifier or document are of invalid type.
         """
         self[identifier] = document
 
     def keys(self):
-        "Return an iterator over identifiers for all documents in the database."
+        "Return a generator producing identifiers for all documents in the database."
         return iter(self)
 
     def values(self):
-        "Return an iterator over all documents in the database."
-        sql = "SELECT document FROM documents ORDER BY id"
+        "Return a generator producing all documents in the database."
+        sql = "SELECT document FROM documents ORDER BY identifier"
         return (row[0] for row in self.cnx.execute(sql))
 
     def items(self):
-        "Return an iterator over all tuples (identifier, document) in the database."
+        """Return a generator producing all tuples (identifier, document)
+        in the database.
+        """
         sql = "SELECT identifier, document FROM documents ORDER BY identifier"
-        return ((row[0], row[1]) for row in self.cnx.execute())
+        return (tuple(row) for row in self.cnx.execute())
 
     def delete(self, identifier):
         """Delete the document with the given identifier from the database.
 
-        Raises NotInTransactionError
+        Raises TransactionError if not within a transaction.
         Raises NoSuchDocumentError
         """
-        if not self.in_transaction:
-            raise NotInTransactionError(
-                "Cannot delete an item when not in a transaction."
-            )
-        cursor = self.cnx.cursor()
-        cursor.execute("DELETE FROM documents WHERE identifier=?", (identifier,))
-        if cursor.rowcount != 1:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
-        for name in self._indexes:
-            cursor.execute(f"DELETE FROM i_{name} WHERE identifier=?", (identifier,))
-
-    def document_count(self):
-        "Return the number of documents in the database."
-        return len(self)
+        del self[identifier]
 
     def create_index(self, name, keypath, unique=False, require=None):
         """Create an index with the given name to the database.
         All current documents will be indexed, so this might take a while.
 
-        keypath: The path in the data JSON document to index.
+        'keypath': The path in the data JSON document to index.
         If the keypath yields None, the document is not included in the index.
         If the keypath yields a list, all elements in the list will be
         included in separate entries in the index.
 
-        unique: The keys in the index must be unique, or not.
+        'unique': The keys in the index must be unique, or not.
 
-        require: An optional jsonLogic expression. If given, only documents
+        'require': An optional jsonLogic expression. If given, only documents
         satisfying the expression are included in the index.
+
+        Raises TransactionError if within a transaction.
         """
         if not _INDEXNAME_RX.match(name):
             raise IndexSpecificationError(f"Invalid index name '{name}'.")
@@ -282,7 +314,7 @@ class Database:
             cursor.execute(sql, (name, keypath, unique, require))
         except sqlite3.IntegrityError:
             raise IndexSpecificationError
-        # This relies on Sqlite3 peculiar take on column type.
+        # This relies on Sqlite3's peculiar take on column type.
         sql = f"CREATE TABLE i_{name} (identifier TEXT NOT NULL, key INTEGER NOT NULL)"
         cursor.execute(sql)
         cursor.execute(f"CREATE INDEX xi_{name} ON i_{name} (identifier)")
@@ -320,30 +352,28 @@ class Database:
                 sql = f"INSERT INTO i_{name} (identifier, key) VALUES (?, ?)"
                 self.cnx.execute(sql, (identifier, key))
             except sqlite3.IntegrityError:
-                raise IndexUniqueError(
+                raise NotUniqueError(
                     f"Document {identifier}, index {name}, keypath {keypath}, key {key} is not unique."
                 )
 
     def delete_index(self, name):
         """Delete the named index.
 
-        Raises InTransactionError
+        Raises TransactionError if within a transaction.
         Raises NoSuchIndexError
         """
         if self.in_transaction:
-            raise InTransactionError(
-                "Cannot delete an index while within a transaction."
-            )
+            raise TransactionError("Cannot delete index within a transaction.")
         try:
             self._indexes.pop(name)
         except KeyError:
             raise NoSuchIndexError(f"No such index '{name}'.")
-        else:
-            cursor = self.cnx.cursor()
-            cursor.execute("BEGIN")
-            cursor.execute("DELETE FROM indexes WHERE name=?", (name,))
-            cursor.execute("COMMIT")
-            cursor.execute(f"DROP TABLE i_{name}")
+
+        cursor = self.cnx.cursor()
+        cursor.execute("BEGIN")
+        cursor.execute("DELETE FROM indexes WHERE name=?", (name,))
+        cursor.execute("COMMIT")
+        cursor.execute(f"DROP TABLE i_{name}")
 
     def get_indexes(self):
         "Return a copy of the information about all current indexes."
@@ -357,26 +387,39 @@ class Database:
         "Return the number of indexes in the database."
         return self.cnx.execute("SELECT COUNT(*) FROM indexes").fetchone()[0]
 
+    def in_index(self, name, identifier):
+        """Is a document with the given identifier in the named index?
+
+        Raises NoSuchIndexError
+        """
+        if name not in self._indexes:
+            raise NoSuchIndexError(f"No such index '{name}'.")
+        sql = f"SELECT COUNT(*) FROM i_{name} WHERE identifier=?"
+        return bool(self.cnx.execute(sql, (identifier,)).fetchone()[0])
+
     def lookup(self, name, key):
-        """Get the document identifiers in the named index having the given key.
+        """Return a generator producing the document identifiers in
+        the named index having the given key.
 
         Raises NoSuchIndexError
         """
         if not self.is_index(name):
             raise NoSuchIndexError(f"No such index '{name}'.")
+
         sql = f"SELECT identifier FROM i_{name} WHERE key=?"
         return (row[0] for row in self.cnx.execute(sql, (key,)))
 
     def lookup_documents(self, name, key):
-        """Get the tuples (identifier, document) in the named index
-        having the given key.
+        """Return a generator producing all tuples (identifier, document)
+        in the named index having the given key.
 
         Raises NoSuchIndexError
         """
         if not self.is_index(name):
             raise NoSuchIndexError(f"No such index '{name}'.")
+
         sql = f"SELECT i.identifier, d.document FROM i_{name} AS i, documents AS d WHERE key=? AND i.identifier=d.identifier"
-        return ((row[0], row[1]) for row in self.cnx.execute(sql, (key,)))
+        return (tuple(row) for row in self.cnx.execute(sql, (key,)))
 
     def lookup_count(self, name, key):
         """Return the number of documents in the named index having the given key.
@@ -385,11 +428,12 @@ class Database:
         """
         if not self.is_index(name):
             raise NoSuchIndexError(f"No such index '{name}'.")
+
         sql = f"SELECT COUNT(*) FROM i_{name} WHERE key=?"
         return self.cnx.execute(sql, (key,)).fetchone()[0]
 
     def range(self, name, low=None, high=None, reverse=False):
-        """Return an iterator over tuples (identifier, key) in the
+        """Return a generator producing all tuples (identifier, key) in the
         named index given low (inclusive) and high (exclusive) bounds.
 
         Raises NoSuchIndexError
@@ -416,11 +460,11 @@ class Database:
             sql += " ORDER BY key DESC"
         else:
             sql += " ORDER BY key ASC"
-        return ((row[0], row[1]) for row in self.cnx.execute(sql, keys))
+        return (tuple(row) for row in self.cnx.execute(sql, keys))
 
     def range_documents(self, name, low=None, high=None, reverse=False):
-        """Return an iterator over tuples (identifier, document, key) in the
-        named index given given low (inclusive) and high (exclusive) bounds.
+        """Return a generator producing all tuples (identifier, document, key) in
+        the named index given given low (inclusive) and high (exclusive) bounds.
 
         Raises NoSuchIndexError
         """
@@ -446,7 +490,7 @@ class Database:
             sql += " ORDER BY i.key DESC"
         else:
             sql += " ORDER BY i.key ASC"
-        return ((row[0], row[1], row[2]) for row in self.cnx.execute(sql, keys))
+        return (tuple(row) for row in self.cnx.execute(sql, keys))
 
     def range_count(self, name, low=None, high=None, reverse=False):
         """Return the number of documents in the named index 
@@ -480,13 +524,12 @@ class Database:
         The content_type is guessed from the name, if not given explicitly.
         Overwrites the attachment if it already exists.
 
-        Raises NotInTransactionError
+        Raises TransactionError if not within a transaction.
         Raises NoSuchDocumentError
         """
         if not self.in_transaction:
-            raise NotInTransactionError(
-                "Cannot put attachment when not in transaction."
-            )
+            raise NotInTransactionError("Put attachment must be within a transaction.")
+
         if not identifier in self:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
         if not isinstance(content, bytes):
@@ -541,17 +584,15 @@ class Database:
     def delete_attachment(self, identifier, name):
         """Delete the named attachment for the document.
 
-        Raises NotInTransactionError
+        Raises TransactionError if not within a transaction.
         Raises NoSuchDocumentError if no such document.
         Raises NoSuchAttachmentError if no such attachment.
         """
         if not self.in_transaction:
-            raise NotInTransactionError(
-                "Cannot delete an item when not in a transaction."
-            )
-
+            raise TransactionError("Delete must be within a transaction.")
         if identifier not in self:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
+
         cursor = self.cnx.cursor()
         cursor.execute("DELETE FROM attachments WHERE identifier=? AND name=?", (identifier, name))
         if cursor.rowcount != 1:
@@ -776,13 +817,17 @@ class jsondocdbException(Exception):
     pass
 
 
+class ConnectionError(jsondocdbException):
+    "Connection exists, or does not exist, when the reverse is expected."
+    pass
+
 class InvalidFileError(jsondocdbException):
-    "The SQLite3 file is not a jsondocdb file."
+    "The existing file is not an Sqlite3 or jsondocdb file."
     pass
 
 
 class NoSuchDocumentError(jsondocdbException):
-    "The document was not found in the jsondocdb database."
+    "The document does not exist in the jsondocdb database."
     pass
 
 
@@ -791,19 +836,15 @@ class NoSuchAttachmentError(jsondocdbException):
     pass
 
 
-class InTransactionError(jsondocdbException):
-    "Operation is not allowed while in a transaction."
-
-
-class NotInTransactionError(jsondocdbException):
-    "Operation is not allowed when not in a transaction."
+class TransactionError(jsondocdbException):
+    "Wrong transaction state for operation."
 
 
 class IndexSpecificationError(jsondocdbException):
     "Index specification is invalid, or index exists already."
 
 
-class IndexUniqueError(jsondocdbException):
+class NotUniqueError(jsondocdbException):
     "Index unique constraint was violated."
 
 
