@@ -158,31 +158,31 @@ def test_several_docs(db):
         assert docid not in db, "The identifier should not be in the database."
 
 def test_create_delete_index(db_with_docs):
-    x = db_with_docs.index("first_index", "a", unique=True)
+    x = db_with_docs.index("my_index", "a", unique=True)
     assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
     with pytest.raises(jsondocdb.IndexExistsError):
-        y = db_with_docs.index("first_index", "text")
+        y = db_with_docs.index("my_index", "text")
     with pytest.raises(jsondocdb.NoSuchIndexError):
         y = db_with_docs.index("no_such_index", None)
-    db_with_docs.index("first_index").delete()
+    db_with_docs.index("my_index").delete()
     assert len(db_with_docs.indexes()) == 0
     with pytest.raises(jsondocdb.NoSuchIndexError):
-        y = db_with_docs.index("first_index")
+        y = db_with_docs.index("my_index")
 
 def test_index_get(db_with_docs):
-    x = db_with_docs.index("index_name", "a")
+    x = db_with_docs.index("my_index", "a")
     assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
     assert len(x) == len(db_with_docs), "The number of entries in the index equals the number of items."
     assert 2 in x, "The key should be in the index."
     assert 1000 not in x, "The key should not be in the index."
     assert [1,2,3] not in x, "Garbage key should not be in the index without raising an error."
     key = 2
-    result = list(db_with_docs.index("index_name").get(key))
+    result = list(db_with_docs.index("my_index").get(key))
     assert len(result) == 1, "One identifier fetched from index."
     id = result[0]
     doc = db_with_docs[id]
     assert doc["a"] == key, "Correctly indexed document."
-    result = list(db_with_docs.index("first_index").get_documents(key))
+    result = list(db_with_docs.index("my_index").get_documents(key))
     assert len(result) == 1, "One (identifier, document) fetched from index."
     identifier, document = result[0]
     assert document["a"] == key, "Correctly indexed document."
@@ -190,10 +190,9 @@ def test_index_get(db_with_docs):
     assert doc == document, "Same document fetched."
     with db_with_docs:
         del db_with_docs[identifier]
-    assert len(x) == 3, "Removing item from database should also remove entry from index."
+    assert len(x) == len(db_with_docs), "Removing item from database should also remove entry from index."
     
-
-def test_index_get(db_with_docs):
+def test_index_get_unique(db_with_docs):
     x = db_with_docs.index("index", "a", unique=True)
     assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
     assert len(x) == len(db_with_docs), "The number of entries in the index equals the number of items."
@@ -202,3 +201,22 @@ def test_index_get(db_with_docs):
 
 def test_index_range(db_with_docs):
     x = db_with_docs.index("my_index", "a")
+    low = 1
+    high = 3
+    result = list(x.range(low, high))
+    assert len(result) == 2, "Two items in index."
+    assert result[0][0] in db_with_docs, "Identifier in database."
+    assert result[0][1] >= low, "Lower key bound."
+    assert result[-1][1] < high, "Upper key bound."
+    assert not list(x.range(-2, -1)), "Empty result."
+
+def test_index_range_documents(db_with_docs):
+    x = db_with_docs.index("my_index", "a")
+    low = 1
+    high = 3
+    result = list(x.range_documents(low, high))
+    assert len(result) == 2, "Two items in index."
+    docid = result[0][0]
+    doc = result[0][2]
+    assert docid in db_with_docs, "Identifier in database."
+    assert db_with_docs[docid] == doc, "Same document."

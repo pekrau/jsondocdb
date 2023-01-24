@@ -5,7 +5,7 @@ A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic.
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 
 
 import functools
@@ -195,10 +195,9 @@ class Database:
         cursor.execute("DELETE FROM documents WHERE identifier=?", (identifier,))
         if cursor.rowcount != 1:
             raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
-        # Remove the identifier from the indexes.
         for index in self.indexes():
             index._remove(identifier)
+        cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
 
     def __enter__(self):
         """A context manager for a transaction. All operations that modify
@@ -443,19 +442,22 @@ class Index:
             except sqlite3.IntegrityError:
                 raise IndexExistsError(f"Index named '{self.name}' already exists.")
 
-        # This relies on Sqlite3's peculiar take on column type.
-        self.db.cnx.execute(f"CREATE TABLE i_{self.name} (identifier TEXT NOT NULL, key INTEGER NOT NULL)")
-        self.db.cnx.execute(f"CREATE INDEX xi_{self.name} ON i_{self.name} (identifier)")
-        self.db.cnx.execute(
-            f"CREATE {self.unique and 'UNIQUE' or ''} INDEX xv_{self.name} ON i_{self.name} (key)"
-        )
+            # This relies on Sqlite3's peculiar take on column type.
+            sql = f"CREATE TABLE i_{self.name} (identifier TEXT NOT NULL, key INTEGER NOT NULL)"
+            self.db.cnx.execute(sql)
+            sql = f"CREATE INDEX xi_{self.name} ON i_{self.name} (identifier)"
+            self.db.cnx.execute(sql)
+            sql = f"CREATE {self.unique and 'UNIQUE' or ''} INDEX xk_{self.name} ON i_{self.name} (key)"
+            self.db.cnx.execute(sql)
 
-        # Process all existing documents in the database.
-        # XXX Rollback if violation of unique!
-        with self.db:
-            sql = "SELECT identifier, document FROM documents"
-            for identifier, document in self.db.cnx.execute(sql).fetchall():
-                self._add(identifier, document)
+            # Process all existing documents in the database.
+            try:
+                sql = "SELECT identifier, document FROM documents"
+                for identifier, document in self.db.cnx.execute(sql).fetchall():
+                    self._add(identifier, document)
+            except sqlite3.IntegrityError:
+                self.db.cnx.execute(f"DROP TABLE i_{self.name}")
+                raise NotUniqueError
 
     def __len__(self):
         "Return the number of entries in the index."
@@ -548,7 +550,7 @@ class Index:
                 )
 
     def range(self, low=None, high=None, reverse=False):
-        """Return a generator producing all tuples (identifier, key) in this
+        """Return a generator producing all tuples (identifier, key) from the
         index given low (inclusive) and high (exclusive) bounds.
         """
         sql = f"SELECT identifier, key FROM i_{self.name}"
@@ -574,10 +576,10 @@ class Index:
         return (tuple(row) for row in self.db.cnx.execute(sql, keys))
 
     def range_documents(self, low=None, high=None, reverse=False):
-        """Return a generator producing all tuples (identifier, document, key) in
-        this index given given low (inclusive) and high (exclusive) bounds.
+        """Return a generator producing all tuples (identifier, key, document) from
+        the index given given low (inclusive) and high (exclusive) bounds.
         """
-        sql = f"SELECT i.identifier, d.document, i.key FROM i_{self.name} AS i, documents AS d WHERE i.identifier = d.identifier"
+        sql = f"SELECT i.identifier, i.key, d.document FROM i_{self.name} AS i, documents AS d WHERE i.identifier = d.identifier"
         if low is None:
             comparison = []
             keys = []
@@ -597,7 +599,7 @@ class Index:
             sql += " ORDER BY i.key DESC"
         else:
             sql += " ORDER BY i.key ASC"
-        return (tuple(row) for row in self.cnx.execute(sql, keys))
+        return (tuple(row) for row in self.db.cnx.execute(sql, keys))
 
 
 class JsonLogic:
