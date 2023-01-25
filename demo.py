@@ -1,42 +1,35 @@
-from jsondocdb import Database, Index, IndexSpecificationError, NoSuchIndexError
+from jsondocdb import Database, IndexSpecificationError, NoSuchIndexError
 
-db = Database("test.db")
+db = Database(":memory:")
 with db:
     db["b"] = {"num": 2, "c": 3, "d": [1, 2, 3]}
     db["x"] = {"erty": "apa"}
     db["y"] = {"content": "blopp"}
 
 try:
-    db.delete_index("some")
+    db.index("some").delete()
     print("deleted index 'some'")
 except NoSuchIndexError:
     pass
 try:
-    db.delete_index("content")
+    db.index("content").delete()
     print("deleted index 'content'")
 except NoSuchIndexError:
     pass
 
-db.create_index("some", "num")
-print("created index 'some'")
+x = db.index("some", "num")
+print(x)
 
-idx = Index(db, "some")
-print(idx.keypath, idx.unique, idx.require)
-
-db.create_index("content", "content")
-print("created index 'content'")
-print(db.lookup_count("content", "blopp"), "key 'blopp' in index 'content'")
+y = db.index("content", "content")
+print(y)
+print(len(list(y.get("blopp"))), "key 'blopp' in index 'content'")
 
 
 with db:
     for i in range(100):
         db[f"d{i}"] = {"num": i, "content": f"Some string with a number {2*i}."}
 
-print(type(db.items()))
-
-for result in db.range_documents("some", 2.1, 5.1):
+for result in x.range_documents(2.1, 5.1):
     print(result, type(result))
-    print(result)
 
-print(db.range_count("some", 2.1, 5.1))
-print(list(db.lookup_documents("some", 2)))
+print(db)

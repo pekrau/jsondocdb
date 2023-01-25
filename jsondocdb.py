@@ -82,6 +82,7 @@ class Database:
             names = [n[0] for n in cursor.fetchall()]
         except sqlite3.DatabaseError as error:
             raise InvalidFileError(str(error))
+        self.filepath = filepath
 
         if names:  # Check that this is a jsondocdb database file.
             if set(["documents", "indexes", "attachments"]).difference(names):
@@ -119,9 +120,21 @@ class Database:
         self.cnx.close()
         del self.cnx
 
+    @property
+    def info(self):
+        "Return a dictionary with information about this database."
+        sql = "SELECT COUNT(*) FROM indexes"
+        n_indexes = self.cnx.execute(sql).fetchone()[0]
+        sql = "SELECT COUNT(*) FROM attachments"
+        n_attachments = self.cnx.execute(sql).fetchone()[0]
+        return dict(version=__version__,
+                    n_documents=len(self),
+                    n_indexes=n_indexes,
+                    n_attachments=n_attachments)
+
     def __str__(self):
         "Return a string with info on number of documents, indexes and documents."
-        return f"jsondocdb {__version__}: {len(self)} documents, {len(self.indexes())} indexes, {self.attachment_count()} attachments."
+        return f'jsondocdb.Database("{self.filepath}"): {len(self)} documents, {self.info["n_indexes"]} indexes, {self.info["n_attachments"]} attachments.'
 
     def __iter__(self):
         """Return an iterator (generator, actually) over document identifiers
@@ -287,7 +300,7 @@ class Database:
         return Index(self, name, keypath=keypath, unique=unique, require=require)
 
     def indexes(self):
-        "Return a list of all existing indexes."
+        "Return a list of all current indexes."
         cursor = self.cnx.cursor()
         cursor.execute("SELECT name FROM indexes")
         return [Index(self, row[0]) for row in cursor]
@@ -371,10 +384,6 @@ class Database:
         if cursor.rowcount != 1:
             raise NoSuchAttachmentError(f"No such attachment '{identifier}' '{name}'.")
 
-    def attachment_count(self):
-        "Return the number of attachments in the database."
-        return self.cnx.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-
 
 class Index:
     "Interface to the named index in the database."
@@ -389,6 +398,10 @@ class Index:
             self._create(keypath, unique, require)
         else:
             self._fetch()
+
+    def __str__(self):
+        "Return a string with infor about the index."
+        return f'jsondocdb.Index("{self.name}", keypath="{self.keypath}"): {len(self)} entries.'
 
     def _fetch(self):
         """Fetch the definition of this index from the database.
@@ -600,6 +613,19 @@ class Index:
         else:
             sql += " ORDER BY i.key ASC"
         return (tuple(row) for row in self.db.cnx.execute(sql, keys))
+
+
+class Attachments:
+    "Interface to attachments for an item in the database."
+
+    def __init__(self, db, identifier):
+        if identifier not in db:
+            raise NoSuchDocumentError
+        self.db = db
+        self.identifier = identifier
+
+    def get(self, name):
+        pass # XXX
 
 
 class JsonLogic:
