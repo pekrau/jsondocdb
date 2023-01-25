@@ -32,4 +32,15 @@ with db:
 for result in x.range_documents(2.1, 5.1):
     print(result, type(result))
 
+a = db.attachments("x")
+filepath = "demo.py"
+with open(filepath, "rb") as infile:
+    content = infile.read()
+with db:
+    a.put(filepath, content)
 print(db)
+
+print(len(a))
+for name in a:
+    attachment = a.get(name)
+    print(attachment.name, attachment.content_type, len(attachment))

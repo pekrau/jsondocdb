@@ -19,11 +19,7 @@ def db():
     db.close()
     os.remove(dbfile.name)
 
-@pytest.fixture
-def db_with_docs():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name)
+def add_some_documents(db):
     with db:
         db["first document"] = dict(a=1, b="two", c="III")
         db["second"] = dict(a=2, text="Some text.")
@@ -31,9 +27,6 @@ def db_with_docs():
         db["fourth"] = dict(a=4, text="Some text.", d=False, x=[3, 2, "mix"])
         db[uuid.uuid4().hex] = dict(a=19, text="Further along.",
                                     x={"lkla": 234,"q": [1,2]})
-    yield db
-    db.close()
-    os.remove(dbfile.name)
 
 def test_create_db_file():
     dbfile = tempfile.NamedTemporaryFile(delete=False)
@@ -89,7 +82,7 @@ def test_sqlite_file_but_not_jsondocdb_file():
     os.remove(dbfile.name)
 
 def test_add_doc_retrieve(db):
-    n = len(db)
+    assert len(db) == 0, "Empty database."
     docid = "a document"
     doc = {"this": "is",
            "a": "document",
@@ -98,7 +91,7 @@ def test_add_doc_retrieve(db):
            "adict": dict(a=1, b=2, c=3)}
     with db:
         db[docid] = doc
-    assert len(db) == n + 1, "One more document in the database."
+    assert len(db) == 1, "One document in the database."
     assert docid in db, "The identifier should be in the database."
     assert db[docid] == doc, "The identifier fetches its document."
     assert list(db.keys()) == [docid], "The list of identifiers in the database."
@@ -123,12 +116,12 @@ def test_transactions(db):
                 pass
 
 def test_add_doc_same_id(db):
-    n = len(db)
+    assert len(db) == 0, "Empty database."
     docid = "a document"
     with db:
         db[docid] = {"some": "content"}
     m = len(db)
-    assert m == n + 1, "One more document in the database."
+    assert m == 1, "One document in the database."
     assert docid in db, "The identifier is in the database."
     with db:
         db[docid] = {"different": "content"}
@@ -137,19 +130,19 @@ def test_add_doc_same_id(db):
     assert list(db.keys()) == [docid], "The list of identifiers in the database."
 
 def test_several_docs(db):
-    n = len(db)
+    assert len(db) == 0, "Empty database."
     with db:
         for i in range(10):
             docid = f"myname{i}"
             doc = dict(num=i, data="a string" * i)
             db[docid] = doc
-    assert len(db) == n + 10, "The number of documents in the database."
+    assert len(db) == 10, "Ten documents in the database."
     with db:
         for i in range(5, 16):
             docid = f"myname{i}"
             doc = dict(num=i, data="a string" * i)
             db[docid] = doc
-    assert len(db) == n + 16, "The net number of documents in the database."
+    assert len(db) == 16, "Net sixteen documents in the database."
     for i in range(2,12):
         docid = f"myname{i}"
         assert docid in db, "The identifier should be in the database."
@@ -157,66 +150,113 @@ def test_several_docs(db):
         docid = f"myname{i}"
         assert docid not in db, "The identifier should not be in the database."
 
-def test_create_delete_index(db_with_docs):
-    x = db_with_docs.index("my_index", "a", unique=True)
-    assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
+def test_create_delete_index(db):
+    add_some_documents(db)
+    x = db.index("my_index", "a", unique=True)
+    assert len(db.indexes()) == 1, "The number of indexes in the database."
     with pytest.raises(jsondocdb.IndexExistsError):
-        y = db_with_docs.index("my_index", "text")
+        y = db.index("my_index", "text")
     with pytest.raises(jsondocdb.NoSuchIndexError):
-        y = db_with_docs.index("no_such_index", None)
-    db_with_docs.index("my_index").delete()
-    assert len(db_with_docs.indexes()) == 0
+        y = db.index("no_such_index", None)
+    db.index("my_index").delete()
+    assert len(db.indexes()) == 0
     with pytest.raises(jsondocdb.NoSuchIndexError):
-        y = db_with_docs.index("my_index")
+        y = db.index("my_index")
+    cursor = db.cnx.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    assert set([n[0] for n in cursor.fetchall()]) == set(["documents", "indexes", "attachments"]), "All index tables must have been deleted."
 
-def test_index_get(db_with_docs):
-    x = db_with_docs.index("my_index", "a")
-    assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
-    assert len(x) == len(db_with_docs), "The number of entries in the index equals the number of items."
+
+def test_index_get(db):
+    add_some_documents(db)
+    x = db.index("my_index", "a")
+    assert len(db.indexes()) == 1, "The number of indexes in the database."
+    assert len(x) == len(db), "The number of entries in the index equals the number of items."
     assert 2 in x, "The key should be in the index."
     assert 1000 not in x, "The key should not be in the index."
     assert [1,2,3] not in x, "Garbage key should not be in the index without raising an error."
     key = 2
-    result = list(db_with_docs.index("my_index").get(key))
+    result = list(db.index("my_index").get(key))
     assert len(result) == 1, "One identifier fetched from index."
     id = result[0]
-    doc = db_with_docs[id]
+    doc = db[id]
     assert doc["a"] == key, "Correctly indexed document."
-    result = list(db_with_docs.index("my_index").get_documents(key))
+    result = list(db.index("my_index").get_documents(key))
     assert len(result) == 1, "One (identifier, document) fetched from index."
     identifier, document = result[0]
     assert document["a"] == key, "Correctly indexed document."
     assert id == identifier, "Same identifier fetched."
     assert doc == document, "Same document fetched."
-    with db_with_docs:
-        del db_with_docs[identifier]
-    assert len(x) == len(db_with_docs), "Removing item from database should also remove entry from index."
+    with db:
+        del db[identifier]
+    assert len(x) == len(db), "Removing item from database should also remove entry from index."
     
-def test_index_get_unique(db_with_docs):
-    x = db_with_docs.index("index", "a", unique=True)
-    assert len(db_with_docs.indexes()) == 1, "The number of indexes in the database."
-    assert len(x) == len(db_with_docs), "The number of entries in the index equals the number of items."
+def test_index_get_unique(db):
+    add_some_documents(db)
+    x = db.index("index", "a", unique=True)
+    assert len(db.indexes()) == 1, "The number of indexes in the database."
+    assert len(x) == len(db), "The number of entries in the index equals the number of items."
     with pytest.raises(jsondocdb.NotUniqueError):
-        y = db_with_docs.index("unique_index", "text", unique=True)
+        y = db.index("unique_index", "text", unique=True)
 
-def test_index_range(db_with_docs):
-    x = db_with_docs.index("my_index", "a")
+def test_index_range(db):
+    add_some_documents(db)
+    x = db.index("my_index", "a")
     low = 1
     high = 3
     result = list(x.range(low, high))
     assert len(result) == 2, "Two items in index."
-    assert result[0][0] in db_with_docs, "Identifier in database."
+    assert result[0][0] in db, "Identifier in database."
     assert result[0][1] >= low, "Lower key bound."
     assert result[-1][1] < high, "Upper key bound."
     assert not list(x.range(-2, -1)), "Empty result."
 
-def test_index_range_documents(db_with_docs):
-    x = db_with_docs.index("my_index", "a")
+def test_index_range_documents(db):
+    add_some_documents(db)
+    x = db.index("my_index", "a")
     low = 1
     high = 3
     result = list(x.range_documents(low, high))
     assert len(result) == 2, "Two items in index."
     docid = result[0][0]
     doc = result[0][2]
-    assert docid in db_with_docs, "Identifier in database."
-    assert db_with_docs[docid] == doc, "Same document."
+    assert docid in db, "Identifier in database."
+    assert db[docid] == doc, "Same document."
+    result = list(x.range_documents(low, high, reverse=True))
+    assert len(result) == 2, "Two items in index."
+    docid2 = result[0][0]
+    doc2 = result[0][2]
+    assert docid2 in db, "Identifier in database."
+    assert db[docid2] == doc2, "Same document."
+    assert docid == result[1][0], "Reversed order."
+
+def test_attachment(db):
+    add_some_documents(db)
+    docid = "first document"
+    assert docid in db, "Document in database."
+    a = db.attachments(docid)
+    assert len(a) == 0, "Initially no attachments for the document."
+    filepath = "test_jsondocdb.py"
+    with open(filepath, "rb") as infile:
+        content = infile.read()
+    length = len(content)
+    with db:
+        a.put(filepath, content)
+    assert len(a) == 1, "One attachment for the document."
+    b = db.attachments(docid)
+    assert len(b) == 1, "One attachment for the document."
+    att = b.get(filepath)
+    assert att.name == filepath, "Attachment name is the filepath."
+    assert att.content_type == "text/x-python", "Python content type."
+    assert len(att) == length, "Correct length."
+    faked_filepath = "tmp.txt"
+    with db:
+        b.put(faked_filepath, content=b"some text")
+    assert len(b) == 2, "Two attachments for the document."
+    assert set(b.keys()) == set([filepath, faked_filepath])
+    with db:
+        b.get(faked_filepath).delete()
+    assert len(b) == 1, "One attachment for the document."
+    with db:
+        del b[filepath]
+    assert len(b) == 0, "No attachments for the document."

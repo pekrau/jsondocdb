@@ -5,7 +5,7 @@ A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic.
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 
 import functools
@@ -105,7 +105,6 @@ class Database:
                 "(identifier TEXT NOT NULL,"  # Foreign key to documents.identifier
                 " name TEXT NOT NULL,"
                 " content_type TEXT NOT NULL,"
-                " size INTEGER NOT NULL,"
                 " content BLOB NOT NULL)"
             )
             cursor.execute(
@@ -163,7 +162,7 @@ class Database:
             if not row:
                 raise KeyError
         except (KeyError, sqlite3.InterfaceError):
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
+            raise NoSuchDocumentError(f"No document '{identifier}'.")
         return row[0]
 
     def __setitem__(self, identifier, document):
@@ -191,9 +190,8 @@ class Database:
                 "UPDATE documents SET document=? where identifier=?",
                 (document, identifier),
             )
-        # Put the identifier and document into the indexes.
         for index in self.indexes():
-            index.put(identifier, document)
+            index._put(identifier, document)
 
     def __delitem__(self, identifier):
         """Delete the document with the given identifier from the database.
@@ -207,7 +205,7 @@ class Database:
         cursor = self.cnx.cursor()
         cursor.execute("DELETE FROM documents WHERE identifier=?", (identifier,))
         if cursor.rowcount != 1:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
+            raise NoSuchDocumentError(f"No document '{identifier}'.")
         for index in self.indexes():
             index._remove(identifier)
         cursor.execute("DELETE FROM attachments WHERE identifier=?", (identifier,))
@@ -255,7 +253,7 @@ class Database:
         self[identifier] = document
 
     def keys(self):
-        "Return a generator producing identifiers for all documents in the database."
+        "Return an iterator over the identifiers for all documents in the database."
         return iter(self)
 
     def values(self):
@@ -305,84 +303,12 @@ class Database:
         cursor.execute("SELECT name FROM indexes")
         return [Index(self, row[0]) for row in cursor]
 
-    def put_attachment(self, identifier, name, content, content_type=None):
-        """Add the given attachment to the document.
-        The content_type is guessed from the name, if not given explicitly.
-        Overwrites the attachment if it already exists.
-
-        Raises NotInTransactionError
-        Raises NoSuchDocumentError
-        """
-        if not self.in_transaction:
-            raise NotInTransactionError
-
-        if not identifier in self:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        if not isinstance(content, bytes):
-            raise TypeError("Attachment contents must be bytes.")
-
-        if content_type is None:
-            content_type = mimetypes.guess_type(name)[0]
-        cursor = self.cnx.cursor()
-        try:
-            cursor.execute(
-                "INSERT INTO attachments (identifier, name, content_type, size, content) VALUES (?, ?, ?, ?, ?)",
-                (identifier, name, content_type, len(content), content),
-            )
-        except sqlite3.IntegrityError:
-            cursor.execute(
-                "UPDATE attachments SET content_type=?, size=?, content=? WHERE identifier=? AND name=?",
-                (content_type, len(content), content, identifier, name),
-            )
-
-    def get_attachments(self, identifier):
-        """Get the information, but not the content, of all attachments for
-        the document as a dictionary with the name as key and the values for
-        that name as a dictionary.
+    def attachments(self, identifier):
+        """Return the attachments interface for the given identifier.
 
         Raises NoSuchDocumentError
         """
-        if identifier not in self:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        sql = "SELECT name, content_type, size FROM attachments WHERE identifier=?"
-        return dict([(row[0], {"content_type": row[1], "size": row[2]})
-                     for row in self.cnx.execute(sql, (identifier,)).fetchall()])
-
-    def get_attachment(self, identifier, name):
-        """Return the named attachment for the document as a dictionary containing
-        the content as well as all other information.
-
-        Raises NoSuchDocumentError if no such document.
-        Raises NoSuchAttachmentError if no such attachment.
-        """
-        if identifier not in self:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
-        sql = "SELECT content_type, size, content FROM attachments WHERE identifier=? AND name=?"
-        rows = self.cnx.execute(sql, (identifier, name)).fetchall()
-        if not rows:
-            raise NoSuchAttachmentError(f"No such attachment '{identifier}' '{name}'.")
-        return {"identifier": identifier,
-                "name": name,
-                "content_type": rows[0][0],
-                "size": rows[0][1],
-                "content": rows[0][2]}
-
-    def delete_attachment(self, identifier, name):
-        """Delete the named attachment for the document.
-
-        Raises NotInTransactionError
-        Raises NoSuchDocumentError if no such document.
-        Raises NoSuchAttachmentError if no such attachment.
-        """
-        if not self.in_transaction:
-            raise NotInTransactionError
-        if identifier not in self:
-            raise NoSuchDocumentError(f"No such document '{identifier}'.")
-
-        cursor = self.cnx.cursor()
-        cursor.execute("DELETE FROM attachments WHERE identifier=? AND name=?", (identifier, name))
-        if cursor.rowcount != 1:
-            raise NoSuchAttachmentError(f"No such attachment '{identifier}' '{name}'.")
+        return Attachments(self, identifier)
 
 
 class Index:
@@ -411,7 +337,7 @@ class Index:
         sql = "SELECT keypath, uniq, require FROM indexes WHERE name=?"
         row = self.db.cnx.execute(sql, (self.name,)).fetchone()
         if not row:
-            raise NoSuchIndexError
+            raise NoSuchIndexError(f"No index '{self.name}'")
         self.keypath = row[0]
         self.unique = bool(row[1])
         self.require = row[2]
@@ -463,7 +389,7 @@ class Index:
             sql = f"CREATE {self.unique and 'UNIQUE' or ''} INDEX xk_{self.name} ON i_{self.name} (key)"
             self.db.cnx.execute(sql)
 
-            # Process all existing documents in the database.
+            # Add all existing documents in the database into this index.
             try:
                 sql = "SELECT identifier, document FROM documents"
                 for identifier, document in self.db.cnx.execute(sql).fetchall():
@@ -515,52 +441,6 @@ class Index:
         """
         sql = f"SELECT i.identifier, d.document FROM i_{self.name} AS i, documents AS d WHERE i.key=? AND i.identifier = d.identifier"
         return (tuple(row) for row in self.db.cnx.execute(sql, (key,)))
-
-    def put(self, identifier, document):
-        """Put the given identifier and document into the index.
-
-        Raises NotInTransactionError
-        """
-        if not self.db.in_transaction:
-            raise NotInTransactionError
-        self._remove(identifier)
-        self._add(identifier, document)
-
-    def _remove(self, identifier):
-        "Remove the entries for this identifier from the index."
-        self.db.cnx.execute(f"DELETE FROM i_{self.name} WHERE identifier=?", (identifier,))
-
-    def _add(self, identifier, document):
-        """Add entried for the identifier and document to this index.
-        Previous entries are not removed.
-        """
-        if not self.requirelogic.apply(document):
-            return
-        key = self.keypathlogic.apply(document)
-        if key is None:
-            return
-        try:
-            if isinstance(key, (str, int, float)):
-                keys = [key]
-            elif isinstance(key, list):
-                keys = key
-                for key in keys:
-                    if not isinstance(key, (str, int, float)):
-                        raise ValueError
-            else:
-                raise ValueError
-        except ValueError:
-            raise ValueError(
-                f"Document {identifier}, keypath {keypathlogic.expression.var}, key {key} is not a simple type, or list of simple types."
-            )
-        for key in keys:
-            try:
-                sql = f"INSERT INTO i_{self.name} (identifier, key) VALUES (?, ?)"
-                self.db.cnx.execute(sql, (identifier, key))
-            except sqlite3.IntegrityError:
-                raise NotUniqueError(
-                    f"Document {identifier}, index {self.name}, keypath {self.keypath}, key {key} is not unique."
-                )
 
     def range(self, low=None, high=None, reverse=False):
         """Return a generator producing all tuples (identifier, key) from the
@@ -614,19 +494,194 @@ class Index:
             sql += " ORDER BY i.key ASC"
         return (tuple(row) for row in self.db.cnx.execute(sql, keys))
 
+    def _put(self, identifier, document):
+        """Put the given identifier and document to the index.
+        Any previous entries are first removed.
+
+        Raises NotInTransactionError
+        """
+        if not self.db.in_transaction:
+            raise NotInTransactionError
+        self._remove(identifier)
+        self._add(identifier, document)
+
+    def _remove(self, identifier):
+        "Remove the entries for this identifier from the index."
+        self.db.cnx.execute(f"DELETE FROM i_{self.name} WHERE identifier=?", (identifier,))
+
+    def _add(self, identifier, document):
+        """Add entries for the identifier and document to this index.
+        Previous entries are not removed.
+        """
+        if not self.requirelogic.apply(document):
+            return
+        key = self.keypathlogic.apply(document)
+        if key is None:
+            return
+        try:
+            if isinstance(key, (str, int, float)):
+                keys = [key]
+            elif isinstance(key, list):
+                keys = key
+                for key in keys:
+                    if not isinstance(key, (str, int, float)):
+                        raise ValueError
+            else:
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                f"Document {identifier}, keypath {keypathlogic.expression.var}, key {key} is not a simple type, or list of simple types."
+            )
+        for key in keys:
+            try:
+                sql = f"INSERT INTO i_{self.name} (identifier, key) VALUES (?, ?)"
+                self.db.cnx.execute(sql, (identifier, key))
+            except sqlite3.IntegrityError:
+                raise NotUniqueError(
+                    f"Document {identifier}, index {self.name}, keypath {self.keypath}, key {key} is not unique."
+                )
+
 
 class Attachments:
-    "Interface to attachments for an item in the database."
+    "Interface to attachments for a document with the given identifier in the database."
 
     def __init__(self, db, identifier):
         if identifier not in db:
-            raise NoSuchDocumentError
-        self.db = db
-        self.identifier = identifier
+            raise NoSuchDocumentError(f"No document '{identifier}'.")
+        self._db = db
+        self._identifier = identifier
+
+    def __iter__(self):
+        "Return an iterator (generator, actually) over all attachment names for the document."
+        sql = "SELECT name FROM attachments WHERE identifier=?"
+        return (row[0] for row in self.db.cnx.execute(sql, (self.identifier,)))
+
+    def __len__(self):
+        "The number of attachments for this document."
+        sql = "SELECT COUNT(*) FROM attachments WHERE identifier=?"
+        return self.db.cnx.execute(sql, (self.identifier,)).fetchone()[0]
+
+    def __getitem__(self, name):
+        return self.get(name)
+
+    def __setitem__(self, name, content):
+        self.put(name, content)
+
+    def __delitem__(self, name):
+        self.get(name).delete()
+
+    @property
+    def db(self):
+        return self._db
+
+    @property
+    def identifier(self):
+        return self._identifier
 
     def get(self, name):
-        pass # XXX
+        """Return the named attachment.
 
+        Raises NoSuchAttachment
+        """
+        return Attachment(self.db, self.identifier, name)
+
+    def put(self, name, content, content_type=None):
+        """Add or update the given content as attachment to the document.
+
+        The content_type is guessed from the name, if not given explicitly.
+
+        Raises TypeError if the content is not bytes.
+        Raises NotInTransactionError
+        """
+        if not isinstance(content, bytes):
+            raise TypeError("Attachment contents must be bytes.")
+        if not self.db.in_transaction:
+            raise NotInTransactionError
+
+        if content_type is None:
+            content_type = mimetypes.guess_type(name)[0]
+        cursor = self.db.cnx.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO attachments (identifier, name, content_type, content) VALUES (?, ?, ?, ?)",
+                (self.identifier, name, content_type, content),
+            )
+        except sqlite3.IntegrityError:
+            cursor.execute(
+                "UPDATE attachments SET content_type=?, content=? WHERE identifier=? AND name=?",
+                (content_type, content, self.identifier, name),
+            )
+
+    def keys(self):
+        "Return an iterator over the names of all attachments for the identifier."
+        return iter(self)
+
+    def values(self):
+        "Return a generator producing all attachments for the identifier."
+        return (Attachment(self.db, self.identifier, name) for name in self)
+
+    def items(self):
+        """Return a generator producing all tuples (name, attachment)
+        for the identifier.
+        """
+        return ((name, Attachment(self.db, self.identifier, name)) for name in self)
+
+
+class Attachment:
+    "Interface to an attachment."
+
+    def __init__(self, db, identifier, name):
+        self._db = db
+        self._identifier = identifier
+        self._name = name
+        sql = "SELECT content_type, content FROM attachments WHERE identifier=? AND name=?"
+        row = db.cnx.execute(sql, (identifier, name)).fetchone()
+        if not row:
+            raise NoSuchAttachment(f"No attachment '{identifier}' '{name}'.")
+        self._content_type = row[0]
+        self._content = row[1]
+
+    def __len__(self):
+        return len(self.content)
+
+    @property
+    def db(self):
+        return self._db
+
+    @property
+    def identifier(self):
+        return self._identifier
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def content_type(self):
+        return self._content_type
+
+    @property
+    def content(self):
+        "Return the content of the attachment."
+        return self._content
+
+    def delete(self):
+        """Delete the attachment. The instance becomes useless after this operation.
+
+        Raises NotInTransactionError
+        Raises NoSuchAttachmentError
+        """
+        if not self.db.in_transaction:
+            raise NotInTransactionError
+        if not self.name:
+            raise NoSuchAttachmenError("This attachment has been deleted.")
+
+        cursor = self.db.cnx.cursor()
+        cursor.execute("DELETE FROM attachments WHERE identifier=? AND name=?", (self.identifier, self.name))
+        if cursor.rowcount != 1:
+            raise NoSuchAttachmentError(f"No such attachment '{identifier}' '{name}'.")
+        self._name = None
+        
 
 class JsonLogic:
     """Implementation of JsonLogic https://jsonlogic.com/

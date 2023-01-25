@@ -1,6 +1,8 @@
 "Test undumping a substantial Anubis dump into jsondocdb."
 
 import json
+import os.path
+import random
 import tarfile
 import time
 
@@ -11,33 +13,33 @@ import tqdm
 
 def create_indexes(db):
     require_call = {"==": [{"var": "doctype"}, "call"]}
-    db.create_index("call_identifier", "identifier", require=require_call)
-    db.create_index("call_closes", "closes", require=require_call)
-    db.create_index("call_opens", "opens", require=require_call)
-    db.create_index("call_owner", "owner", require=require_call)
+    db.index("call_identifier", "identifier", require=require_call)
+    db.index("call_closes", "closes", require=require_call)
+    db.index("call_opens", "opens", require=require_call)
+    db.index("call_owner", "owner", require=require_call)
     require_proposal = {"==": [{"var": "doctype"}, "proposal"]}
-    db.create_index("proposal_identifier", "identifier", require=require_proposal)
-    db.create_index("proposal_call", "call", require=require_proposal)
-    db.create_index("proposal_user", "user", require=require_proposal)
+    db.index("proposal_identifier", "identifier", require=require_proposal)
+    db.index("proposal_call", "call", require=require_proposal)
+    db.index("proposal_user", "user", require=require_proposal)
     require_review = {"==": [{"var": "doctype"}, "review"]}
-    db.create_index("review_call", "call", require=require_review)
-    db.create_index("review_proposal", "proposal", require=require_review)
-    db.create_index("review_reviewer", "reviewer", require=require_review)
+    db.index("review_call", "call", require=require_review)
+    db.index("review_proposal", "proposal", require=require_review)
+    db.index("review_reviewer", "reviewer", require=require_review)
     require_decision = {"==": [{"var": "doctype"}, "decision"]}
-    db.create_index("decision_call", "call", require=require_decision)
-    db.create_index("decision_proposal", "proposal", require=require_decision)
+    db.index("decision_call", "call", require=require_decision)
+    db.index("decision_proposal", "proposal", require=require_decision)
     require_grant = {"==": [{"var": "doctype"}, "grant"]}
-    db.create_index("grant_identifier", "identifier", require=require_grant)
-    db.create_index("grant_call", "call", require=require_grant)
-    db.create_index("grant_proposal", "proposal", require=require_grant)
-    db.create_index("grant_user", "user", require=require_grant)
+    db.index("grant_identifier", "identifier", require=require_grant)
+    db.index("grant_call", "call", require=require_grant)
+    db.index("grant_proposal", "proposal", require=require_grant)
+    db.index("grant_user", "user", require=require_grant)
     require_user = {"==": [{"var": "doctype"}, "user"]}
-    db.create_index("user_username", "username", require=require_user)
-    db.create_index("user_email", "email", require=require_user)
-    db.create_index("user_orcid", "orcid", require=require_user)
-    db.create_index("user_role", "role", require=require_user)
-    db.create_index("user_status", "status", require=require_user)
-    db.create_index("user_last_login", "last_login", require=require_user)
+    db.index("user_username", "username", require=require_user)
+    db.index("user_email", "email", require=require_user)
+    db.index("user_orcid", "orcid", require=require_user)
+    db.index("user_role", "role", require=require_user)
+    db.index("user_status", "status", require=require_user)
+    db.index("user_last_login", "last_login", require=require_user)
 
 def undump(filepath, db):
     """Load the `tar` file given by the path into the database.
@@ -65,7 +67,7 @@ def undump(filepath, db):
                 # An attachment follows its document.
                 a = atts.pop(item.name)
                 with db:
-                    db.put_attachment(doc["_id"], a["filename"], itemdata, a["content_type"])
+                    db.attachments(doc["_id"]).put(a["filename"], itemdata, a["content_type"])
                 nfiles += 1
             else:
                 doc = json.loads(itemdata.decode("utf-8"))
@@ -82,11 +84,21 @@ def undump(filepath, db):
 
 
 if __name__ == "__main__":
-    db = jsondocdb.Database("test.db")
-    time0 = time.perf_counter()
-    print(undump("anubis_dump_2023-01-17.tar.gz", db))
-    print(time.perf_counter() - time0, "seconds")
-    time0 = time.perf_counter()
-    create_indexes(db)
-    print(time.perf_counter() - time0, "seconds")
+    dbfilepath = "dump.db"
+    db = jsondocdb.Database(dbfilepath)
+    if len(db) == 0:
+        time0 = time.perf_counter()
+        print(undump("anubis_dump_2023-01-17.tar.gz", db))
+        print(time.perf_counter() - time0, "seconds")
+        time0 = time.perf_counter()
+        create_indexes(db)
+        print(time.perf_counter() - time0, "seconds")
     print(db)
+    identifiers = list(db)
+    time0 = time.perf_counter()
+    for identifier in random.sample(identifiers, 10000):
+        doc = db[identifier]
+        a = db.attachments(identifier)
+        if a:
+            atts = list(a.items())
+    print(time.perf_counter() - time0, "seconds")
