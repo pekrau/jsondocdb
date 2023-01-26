@@ -121,7 +121,7 @@ class Database:
 
     @property
     def info(self):
-        "Return a dictionary with information about this database."
+        "Return a dictionary with information about the database."
         sql = "SELECT COUNT(*) FROM indexes"
         n_indexes = self.cnx.execute(sql).fetchone()[0]
         sql = "SELECT COUNT(*) FROM attachments"
@@ -132,7 +132,7 @@ class Database:
                     n_attachments=n_attachments)
 
     def __str__(self):
-        "Return a string with info on number of documents, indexes and documents."
+        "Return a string with info about the database."
         return f'jsondocdb.Database("{self.filepath}"): {len(self)} documents, {self.info["n_indexes"]} indexes, {self.info["n_attachments"]} attachments.'
 
     def __iter__(self):
@@ -146,22 +146,25 @@ class Database:
         return self.cnx.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
 
     def __contains__(self, identifier):
-        """Return `True` if the given identifier is in the database, else `False`.
-        """
+        "Return `True` if the given identifier is in the database, else `False`."
         sql = "SELECT COUNT(*) FROM documents WHERE identifier=?"
         try:
             return bool(self.cnx.execute(sql, (identifier,)).fetchone()[0])
-        except sqlite3.InterfaceError:
+        except sqlite3.InterfaceError: # When bad identifier.
             return False
 
     def __getitem__(self, identifier):
-        "Return the document with the given identifier."
+        """Return the document with the given identifier.
+
+        Raises TypeError if the identifier is of invalid type.
+        Raises NoSuchDocumentError
+        """
+        if not isinstance(identifier, str):
+            raise TypeError("'identifier' must be an instance of 'str'.")
+
         sql = "SELECT document FROM documents WHERE identifier=?"
-        try:
-            row = self.cnx.execute(sql, (identifier,)).fetchone()
-            if not row:
-                raise KeyError
-        except (KeyError, sqlite3.InterfaceError):
+        row = self.cnx.execute(sql, (identifier,)).fetchone()
+        if not row:
             raise NoSuchDocumentError(f"No document '{identifier}'.")
         return row[0]
 
@@ -174,8 +177,6 @@ class Database:
         """
         if not self.in_transaction:
             raise NotInTransactionError
-        if not isinstance(identifier, str):
-            raise TypeError("'identifier' must be an instance of 'str'.")
         if not isinstance(document, dict):
             raise TypeError("'document' must be an instance of 'dict'.")
 
@@ -590,11 +591,13 @@ class Attachments:
 
         The content_type is guessed from the name, if not given explicitly.
 
-        Raises TypeError if the content is not bytes.
+        Raises TypeError if name is not str, or the content is not bytes.
         Raises NotInTransactionError
         """
+        if not isinstance(name, str):
+            raise TypeError("Atachment name must be 'str'.")
         if not isinstance(content, bytes):
-            raise TypeError("Attachment contents must be bytes.")
+            raise TypeError("Attachment contents must be 'bytes'.")
         if not self.db.in_transaction:
             raise NotInTransactionError
 
@@ -628,7 +631,7 @@ class Attachments:
 
 
 class Attachment:
-    "Interface to an attachment."
+    "Interface to an existing attachment."
 
     def __init__(self, db, identifier, name):
         self._db = db
