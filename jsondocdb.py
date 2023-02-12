@@ -5,12 +5,13 @@ A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic.
 The JsonLogic class was adapted from https://github.com/nadirizr/json-logic-py
 """
 
-__version__ = "0.9.3"
+__version__ = "0.9.4"
 
 
 import functools
 import json
 import mimetypes
+import os.path
 import re
 import sqlite3
 
@@ -39,25 +40,76 @@ sqlite3.register_adapter(dict, _jsondoc_adapter)
 class Database:
     "A Python Sqlite3 database for JSON documents. Simple indexing using JsonLogic."
 
-    def __init__(self, filepath, readonly=False, **kwargs):
-        """Open or create the database file.
+    def __init__(self, filepath=None, readonly=False, **kwargs):
+        """If a filepath is given, open or create the database file.
 
-        If the file exists, checks that it has the tables appropriate for jsondocdb.
+        If the file exists, checks that it has the tables required for jsondocdb.
 
-        If the file is created, creates the required tables.
+        If the file is created, creates the tables required for jsondocdb.
 
-        The filepath and any additional keyword arguments are passed  to
+        The 'filepath' and any additional keyword arguments are passed  to
         sqlite3.connect, except for 'detect_types', which is hard-wired
-        to sqlite3.PARSE_DECLTYPES, and 'isolation_level' which is set to None.
+        to sqlite3.PARSE_DECLTYPES, and 'isolation_level' which is set to None,
+        i.e. explicit transactions.
         """
-        self.open(filepath, readonly=readonly, **kwargs)
+        if filepath:
+            if os.path.exists(filepath):
+                self.open(filepath, readonly=readonly, **kwargs)
+            elif readonly:
+                raise OSError("Cannot create database file for 'readonly' mode.")
+            else:
+                self.create(filepath, **kwargs)
+
+    def create(self, filepath, **kwargs):
+        """Create the database file and initialize it with the required tables.
+
+        The 'filepath' and any additional keyword arguments are passed  to
+        sqlite3.connect, except for 'detect_types', which is hard-wired
+        to sqlite3.PARSE_DECLTYPES, and 'isolation_level' which is set to None,
+        i.e. explicit transactions.
+
+        Creates the required tables.
+        """
+        if hasattr(self, 'cnx'):
+            raise ConnectionError("There is already an open connection.")
+        if os.path.exists(filepath):
+            raise OSError(f"The file '{filepath}' exists; cannot create it.")
+
+        self.filepath = filepath
+        kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # For JSONDOC handling.
+        kwargs["isolation_level"] = None                  # Use explicit transactions.
+
+        try:
+            self.cnx = sqlite3.connect(self.filepath, **kwargs)
+        except sqlite3.DatabaseError as error:
+            raise InvalidFileError(str(error))
+        cursor = self.cnx.cursor()
+        cursor.execute(
+            "CREATE TABLE documents"
+            "(identifier TEXT PRIMARY KEY, document JSONDOC NOT NULL)"
+        )
+        cursor.execute(
+            "CREATE TABLE indexes"
+            "(name TEXT PRIMARY KEY,"
+            " keypath TEXT NOT NULL,"
+            " uniq INTEGER NOT NULL,"  # Avoid conflict with reserved word.
+            " require JSONDOC)"  # Allow NULL.
+        )
+        cursor.execute(
+            "CREATE TABLE attachments"
+            "(identifier TEXT NOT NULL,"  # Foreign key to documents.identifier
+            " name TEXT NOT NULL,"
+            " content_type TEXT NOT NULL,"
+            " content BLOB NOT NULL)"
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX attachments_index ON attachments (identifier, name)"
+        )
 
     def open(self, filepath, readonly=False, **kwargs):
-        """Open or create the database file.
+        """Open the existing database file.
 
-        If the file exists, checks that it has the tables appropriate for jsondocdb.
-
-        If the file is created, creates the required tables.
+        Checks that it has the tables appropriate for jsondocdb.
 
         The 'filepath' and any additional keyword arguments are passed  to
         sqlite3.connect, except for:
@@ -68,11 +120,14 @@ class Database:
         """
         if hasattr(self, 'cnx'):
             raise ConnectionError("There is already an open connection.")
+        if not os.path.exists(filepath):
+            raise OSError(f"The file '{filepath}' does not exist.")
 
-        kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # To handle JSONDOC.
-        kwargs["isolation_level"] = None                  # Explicit transactions.
+        self.filepath = filepath
+        kwargs["detect_types"] = sqlite3.PARSE_DECLTYPES  # For JSONDOC handling.
+        kwargs["isolation_level"] = None                  # Use explicit transactions.
         if readonly:
-            filepath = f"file:{filepath}?mode=ro"
+            filepath = f"file:{self.filepath}?mode=ro"
             kwargs["uri"] = True
 
         try:
@@ -82,34 +137,10 @@ class Database:
             names = [n[0] for n in cursor.fetchall()]
         except sqlite3.DatabaseError as error:
             raise InvalidFileError(str(error))
-        self.filepath = filepath
-
-        if names:  # Check that this is a jsondocdb database file.
+        else:
             if set(["documents", "indexes", "attachments"]).difference(names):
-                raise InvalidFileError
+                raise InvalidFileError("Database does not contain the required tables.")
 
-        else:  # Empty; initialize tables required for jsondocdb.
-            cursor.execute(
-                "CREATE TABLE documents"
-                "(identifier TEXT PRIMARY KEY, document JSONDOC NOT NULL)"
-            )
-            cursor.execute(
-                "CREATE TABLE indexes"
-                "(name TEXT PRIMARY KEY,"
-                " keypath TEXT NOT NULL,"
-                " uniq INTEGER NOT NULL,"  # Avoid conflict with reserved word.
-                " require JSONDOC)"  # Allow NULL.
-            )
-            cursor.execute(
-                "CREATE TABLE attachments"
-                "(identifier TEXT NOT NULL,"  # Foreign key to documents.identifier
-                " name TEXT NOT NULL,"
-                " content_type TEXT NOT NULL,"
-                " content BLOB NOT NULL)"
-            )
-            cursor.execute(
-                "CREATE UNIQUE INDEX attachments_index ON attachments (identifier, name)"
-            )
 
     def close(self):
         "Close the connection to the database."

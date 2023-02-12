@@ -2,7 +2,6 @@
 
 import os
 import sqlite3
-import tempfile
 import uuid
 
 import pytest
@@ -10,14 +9,23 @@ import pytest
 import jsondocdb
 
 
+def get_filepath():
+    base_filepath = "/tmp/test_jsondocdb"
+    count = 0
+    filepath = base_filepath + str(count)
+    while os.path.exists(filepath):
+        count += 1
+        filepath = base_filepath + str(count)
+    return filepath
+
 @pytest.fixture
 def db():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name)
+    "Get a newly created database."
+    filepath = get_filepath()
+    db = jsondocdb.Database(filepath)
     yield db
     db.close()
-    os.remove(dbfile.name)
+    os.remove(filepath)
 
 def add_some_documents(db):
     with db:
@@ -29,57 +37,62 @@ def add_some_documents(db):
                                     x={"lkla": 234,"q": [1,2]})
 
 def test_create_db_file():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name) 
+    filepath = get_filepath()
+    db = jsondocdb.Database() 
+    db.create(filepath)
     assert len(db) == 0, "The database should be empty."
-    os.remove(dbfile.name)
+    os.remove(filepath)
 
 def test_create_close_reopen_db_file():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name)
+    filepath = get_filepath()
+    db = jsondocdb.Database(filepath) 
     assert len(db) == 0, "The database should be empty."
     db.close()
-    db2 = jsondocdb.Database(dbfile.name)
+    db2 = jsondocdb.Database(filepath)
     assert len(db2) == 0, "The database should be empty."
-    os.remove(dbfile.name)
+    with pytest.raises(OSError):
+        db3 = jsondocdb.Database()
+        db3.create(filepath)
+    os.remove(filepath)
 
 def test_open_open_close_close():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name)
+    filepath = get_filepath()
+    with pytest.raises(OSError):
+        db = jsondocdb.Database()
+        db.open(filepath)
+    db = jsondocdb.Database(filepath) 
     assert len(db) == 0, "The database should be empty."
     with pytest.raises(jsondocdb.ConnectionError):
-        db.open(dbfile.name)
+        db.open(filepath)
     db.close()
     with pytest.raises(jsondocdb.ConnectionError):
         db.close()
-    os.remove(dbfile.name)
+    os.remove(filepath)
 
 def test_create_close_reopen_readonly_db_file():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    db = jsondocdb.Database(dbfile.name)
+    filepath = get_filepath()
+    with pytest.raises(OSError):
+        db = jsondocdb.Database(filepath, readonly=True)
+        db.open(filepath)
+    db = jsondocdb.Database(filepath)
     assert len(db) == 0, "The database should be empty."
     db.close()
-    db2 = jsondocdb.Database(dbfile.name, readonly=True)
+    db2 = jsondocdb.Database(filepath, readonly=True)
     assert len(db2) == 0, "The database should be empty."
-    os.remove(dbfile.name)
+    os.remove(filepath)
 
 def test_not_a_sqlite_file():
     with pytest.raises(jsondocdb.InvalidFileError):
         db = jsondocdb.Database("test_jsondocdb.py")
 
 def test_sqlite_file_but_not_jsondocdb_file():
-    dbfile = tempfile.NamedTemporaryFile(delete=False)
-    dbfile.close()
-    cnx = sqlite3.connect(dbfile.name)
+    filepath = get_filepath()
+    cnx = sqlite3.connect(filepath)
     cnx.execute("CREATE TABLE stuff (i INT PRIMARY KEY)")
     cnx.close()
     with pytest.raises(jsondocdb.InvalidFileError):
-        db = jsondocdb.Database(dbfile.name)
-    os.remove(dbfile.name)
+        db = jsondocdb.Database(filepath)
+    os.remove(filepath)
 
 def test_add_doc_retrieve(db):
     assert len(db) == 0, "Empty database."
